@@ -108,9 +108,10 @@ export async function POST(request: NextRequest) {
       console.log(`Batch ${i / batchSize}: Inserting ${transformedBatch.length} variants`)
       console.log('Sample variant:', JSON.stringify(transformedBatch[0], null, 2))
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { error, data } = await supabase
         .from('variants')
-        .upsert(transformedBatch, { onConflict: 'id' })
+        .upsert(transformedBatch as any[], { onConflict: 'id' })
         .select('id')
 
       if (error) {
@@ -213,9 +214,10 @@ export async function POST(request: NextRequest) {
       for (let i = 0; i < metricsToInsert.length; i += 500) {
         const batch = metricsToInsert.slice(i, i + 500)
         console.log(`Inserting batch of ${batch.length} metrics`)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const { error, data } = await supabase
           .from('forecast_metrics')
-          .upsert(batch, { onConflict: 'variant_id' })
+          .upsert(batch as any[], { onConflict: 'variant_id' })
           .select('variant_id')
 
         if (error) {
@@ -289,9 +291,10 @@ async function updateBusinessSummary(supabase: ReturnType<typeof createAdminClie
     top_priority_items: null
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await supabase
     .from('business_summary')
-    .upsert(summaryData, { onConflict: 'id' })
+    .upsert(summaryData as any, { onConflict: 'id' })
 }
 
 // GET endpoint to check import status
