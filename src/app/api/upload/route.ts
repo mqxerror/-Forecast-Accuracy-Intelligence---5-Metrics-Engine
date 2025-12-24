@@ -114,7 +114,13 @@ export async function POST(request: NextRequest) {
           product_type: v.product_type ? String(v.product_type) : undefined,
           image: v.image ? String(v.image) : undefined,
           price: v.price != null ? Number(v.price) : undefined,
-          cost_price: v.cost_price != null ? Number(v.cost_price) : undefined,
+          // Check multiple possible cost field names from Inventory Planner
+          cost_price: v.cost_price != null ? Number(v.cost_price)
+            : v.cost != null ? Number(v.cost)
+            : v.unit_cost != null ? Number(v.unit_cost)
+            : v.average_cost != null ? Number(v.average_cost)
+            : v.cogs != null ? Number(v.cogs)
+            : undefined,
           in_stock: Number(v.in_stock) || 0,
           purchase_orders_qty: Number(v.purchase_orders_qty) || 0,
           last_7_days_sales: Number(v.last_7_days_sales) || 0,
@@ -193,44 +199,104 @@ export async function POST(request: NextRequest) {
 }
 
 async function calculateAllMetrics(supabase: ReturnType<typeof createAdminClient>): Promise<number> {
-  const { data: variantsWithSales } = await supabase
+  // FIXED: Now fetches forecast_by_period to use ACTUAL forecasts from Inventory Planner
+  const { data: variantsWithData } = await supabase
     .from('variants')
-    .select('id, sku, orders_by_month')
+    .select('id, sku, orders_by_month, forecast_by_period')
     .not('orders_by_month', 'is', null)
 
-  if (!variantsWithSales || variantsWithSales.length === 0) {
+  if (!variantsWithData || variantsWithData.length === 0) {
     return 0
   }
 
   const metricsToInsert: MetricInsert[] = []
 
-  for (const variant of variantsWithSales as { id: string; sku: string; orders_by_month: Variant['orders_by_month'] }[]) {
+  for (const variant of variantsWithData as {
+    id: string
+    sku: string
+    orders_by_month: Variant['orders_by_month']
+    forecast_by_period: Variant['forecast_by_period']
+  }[]) {
     try {
       const ordersByMonth = variant.orders_by_month as Record<string, Record<string, number>>
+      const forecastByPeriod = variant.forecast_by_period as Record<string, Record<string, number>> | null
+
       if (!ordersByMonth) continue
 
-      const monthlyData: { year: string; month: string; value: number }[] = []
+      // Parse actual sales data (orders_by_month)
+      const actualData: { key: string; value: number }[] = []
       for (const year of Object.keys(ordersByMonth).sort()) {
         const months = ordersByMonth[year]
         if (typeof months !== 'object') continue
         for (const month of Object.keys(months).sort((a, b) => Number(a) - Number(b))) {
-          monthlyData.push({ year, month, value: Number(months[month]) || 0 })
+          actualData.push({
+            key: `${year}-${month.padStart(2, '0')}`,
+            value: Number(months[month]) || 0
+          })
         }
       }
 
-      if (monthlyData.length < 6) continue
+      if (actualData.length < 6) continue
 
-      const recentData = monthlyData.slice(-12)
-      const actual = recentData.map(d => d.value)
+      // Parse forecast data (forecast_by_period) if available
+      const forecastData: { key: string; value: number }[] = []
+      if (forecastByPeriod && typeof forecastByPeriod === 'object') {
+        for (const year of Object.keys(forecastByPeriod).sort()) {
+          const months = forecastByPeriod[year]
+          if (typeof months !== 'object') continue
+          for (const month of Object.keys(months).sort((a, b) => Number(a) - Number(b))) {
+            forecastData.push({
+              key: `${year}-${month.padStart(2, '0')}`,
+              value: Number(months[month]) || 0
+            })
+          }
+        }
+      }
+
+      // Get the last 12 periods of actual data
+      const recentActual = actualData.slice(-12)
+      const actual = recentActual.map(d => d.value)
 
       if (actual.every(v => v === 0)) continue
 
-      const naiveForecast = [actual[0], ...actual.slice(0, -1)]
+      // Build forecast array - use actual forecasts if available, otherwise use naive
+      let forecast: number[]
+      let usingActualForecast = false
 
-      const mape = calculateMAPE(actual, naiveForecast)
-      const wape = calculateWAPE(actual, naiveForecast)
-      const rmse = calculateRMSE(actual, naiveForecast)
-      const bias = calculateBias(actual, naiveForecast)
+      if (forecastData.length > 0) {
+        // Match forecast periods to actual periods
+        const forecastMap = new Map(forecastData.map(f => [f.key, f.value]))
+        forecast = recentActual.map(a => forecastMap.get(a.key) ?? 0)
+
+        // Check if we have meaningful forecast data (not all zeros)
+        if (forecast.some(v => v > 0)) {
+          usingActualForecast = true
+        }
+      }
+
+      // Fallback to naive forecast if no real forecast data
+      if (!usingActualForecast) {
+        forecast = [actual[0], ...actual.slice(0, -1)]
+      }
+
+      // Calculate naive forecast for WASE comparison
+      const naiveForecast = [actual[0], ...actual.slice(0, -1)]
+      const naiveMape = calculateMAPE(actual, naiveForecast)
+
+      // Calculate metrics using the actual or naive forecast
+      const mape = calculateMAPE(actual, forecast)
+      const wape = calculateWAPE(actual, forecast)
+      const rmse = calculateRMSE(actual, forecast)
+      const bias = calculateBias(actual, forecast)
+
+      // Calculate WASE (compares forecast error to naive forecast error)
+      let wase: number | null = null
+      if (naiveMape !== null && naiveMape > 0 && mape !== null) {
+        // WASE = forecast error / naive error
+        const forecastError = actual.reduce((sum, a, i) => sum + Math.abs(a - forecast[i]), 0)
+        const naiveError = actual.reduce((sum, a, i) => sum + Math.abs(a - naiveForecast[i]), 0)
+        wase = naiveError > 0 ? forecastError / naiveError : null
+      }
 
       if (mape !== null && mape < 500) {
         metricsToInsert.push({
@@ -239,9 +305,11 @@ async function calculateAllMetrics(supabase: ReturnType<typeof createAdminClient
           mape,
           wape,
           rmse,
+          wase,
           bias,
+          naive_mape: naiveMape,
           actual_values: actual,
-          forecast_values: naiveForecast,
+          forecast_values: forecast,
           calculated_at: new Date().toISOString()
         })
       }

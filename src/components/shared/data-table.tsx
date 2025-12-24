@@ -89,8 +89,8 @@ export function DataTable<T extends Record<string, unknown>>({
         <Table>
           <TableHeader>
             <TableRow>
-              {columns.map((column) => (
-                <TableHead key={String(column.key)} className={column.className}>
+              {columns.map((column, colIndex) => (
+                <TableHead key={`${String(column.key)}-${colIndex}`} className={column.className}>
                   {column.header}
                 </TableHead>
               ))}
@@ -113,10 +113,10 @@ export function DataTable<T extends Record<string, unknown>>({
                   onClick={() => onRowClick?.(row)}
                   className={onRowClick ? 'cursor-pointer hover:bg-gray-50' : ''}
                 >
-                  {columns.map((column) => {
+                  {columns.map((column, colIndex) => {
                     const value = getValue(row, column.key)
                     return (
-                      <TableCell key={String(column.key)} className={column.className}>
+                      <TableCell key={`${String(column.key)}-${colIndex}`} className={column.className}>
                         {column.render
                           ? column.render(value as T[keyof T], row)
                           : String(value ?? '-')}

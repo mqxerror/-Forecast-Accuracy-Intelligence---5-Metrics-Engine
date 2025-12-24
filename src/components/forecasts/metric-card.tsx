@@ -89,7 +89,7 @@ export function MetricCard({
           <p className="mt-2 text-sm font-medium">{interpretation}</p>
         )}
 
-        {benchmark && benchmark.value !== null && (
+        {benchmark && benchmark.value !== null && benchmark.value > 0 && (
           <div className="mt-3 flex items-center gap-2 text-xs">
             <span className="text-gray-500">{benchmark.label}:</span>
             <span
@@ -102,11 +102,21 @@ export function MetricCard({
             >
               {formatPercentage(benchmark.value)}
             </span>
-            {value !== null && value < benchmark.value && (
+            {value !== null && benchmark.value > 0 && value < benchmark.value && (
               <span className="text-green-600">
                 ({formatPercentage(benchmark.value - value)} better)
               </span>
             )}
+            {value !== null && benchmark.value > 0 && value >= benchmark.value && (
+              <span className="text-yellow-600">
+                ({formatPercentage(value - benchmark.value)} worse)
+              </span>
+            )}
+          </div>
+        )}
+        {benchmark && (benchmark.value === null || benchmark.value === 0) && (
+          <div className="mt-3 text-xs text-gray-400 italic">
+            Benchmark not available - insufficient data
           </div>
         )}
       </CardContent>

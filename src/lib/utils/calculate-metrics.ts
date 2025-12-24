@@ -11,6 +11,86 @@ export interface MetricResult {
   formula: string
 }
 
+// ============================================================================
+// FORECAST SOURCE TRACKING
+// ============================================================================
+
+/**
+ * Source of forecast data
+ * - inventory_planner: Using actual forecasts from IP
+ * - naive_benchmark: No IP forecast, using naive (previous = next)
+ * - insufficient_data: Not enough periods to calculate
+ */
+export type ForecastSource = 'inventory_planner' | 'naive_benchmark' | 'insufficient_data'
+
+/**
+ * Data tier based on available periods
+ */
+export interface DataTier {
+  tier: 'full' | 'limited' | 'minimal' | 'insufficient'
+  periods: number
+  metricsAvailable: string[]
+  confidence: 'high' | 'medium' | 'low' | 'none'
+  message: string
+}
+
+/**
+ * Determine data tier based on period count
+ */
+export function getDataTier(periodCount: number): DataTier {
+  if (periodCount >= 12) {
+    return {
+      tier: 'full',
+      periods: periodCount,
+      metricsAvailable: ['mape', 'wape', 'rmse', 'wase', 'bias'],
+      confidence: 'high',
+      message: 'Full historical data available'
+    }
+  }
+  if (periodCount >= 6) {
+    return {
+      tier: 'limited',
+      periods: periodCount,
+      metricsAvailable: ['mape', 'wape', 'rmse', 'bias'],
+      confidence: 'medium',
+      message: 'Limited history - WASE may be unreliable'
+    }
+  }
+  if (periodCount >= 3) {
+    return {
+      tier: 'minimal',
+      periods: periodCount,
+      metricsAvailable: ['mape', 'wape', 'bias'],
+      confidence: 'low',
+      message: 'Minimal data - metrics are directional only'
+    }
+  }
+  return {
+    tier: 'insufficient',
+    periods: periodCount,
+    metricsAvailable: [],
+    confidence: 'none',
+    message: 'Insufficient data for reliable metrics'
+  }
+}
+
+/**
+ * Select primary metric based on data characteristics
+ * - Use WAPE for SKUs with many zero-sales periods
+ * - Use MAPE for normal SKUs
+ */
+export function selectPrimaryMetric(actuals: number[]): 'mape' | 'wape' {
+  const zeroCount = actuals.filter(a => a === 0).length
+  const zeroRatio = zeroCount / actuals.length
+
+  // If more than 30% zeros, use WAPE as primary
+  return zeroRatio > 0.3 ? 'wape' : 'mape'
+}
+
+// ============================================================================
+// MAPE - Mean Absolute Percentage Error
+// ============================================================================
+
 /**
  * MAPE - Mean Absolute Percentage Error
  * Average of absolute percentage errors
@@ -37,6 +117,69 @@ export function calculateMAPE(actual: number[], forecast: number[]): number | nu
 }
 
 /**
+ * Smoothed MAPE that handles zero-sales periods
+ * - Perfect prediction of zero counts as 0% error
+ * - Actual=0 with non-zero forecast caps at 100% error per period
+ *
+ * Returns value, periods excluded, and method used
+ */
+export interface SmoothedMAPEResult {
+  value: number | null
+  periodsExcluded: number
+  zeroPeriods: number
+  method: 'standard' | 'smoothed'
+}
+
+export function calculateSmoothedMAPE(
+  actuals: number[],
+  forecasts: number[],
+  smoothingFactor: number = 1
+): SmoothedMAPEResult {
+  if (actuals.length !== forecasts.length || actuals.length === 0) {
+    return { value: null, periodsExcluded: 0, zeroPeriods: 0, method: 'standard' }
+  }
+
+  let totalError = 0
+  let validPeriods = 0
+  let excludedPeriods = 0
+  let zeroPeriods = 0
+
+  for (let i = 0; i < actuals.length; i++) {
+    const actual = actuals[i]
+    const forecast = forecasts[i]
+
+    if (actual === 0 && forecast === 0) {
+      // Perfect prediction of zero - count as 0% error
+      validPeriods++
+      zeroPeriods++
+      continue
+    }
+
+    if (actual === 0) {
+      // Use absolute error capped at 100%
+      totalError += Math.min(Math.abs(forecast) / smoothingFactor, 1)
+      validPeriods++
+      excludedPeriods++
+      zeroPeriods++
+    } else {
+      totalError += Math.abs(actual - forecast) / actual
+      validPeriods++
+    }
+  }
+
+  return {
+    value: validPeriods > 0 ? (totalError / validPeriods) * 100 : null,
+    periodsExcluded: excludedPeriods,
+    zeroPeriods,
+    method: excludedPeriods > 0 ? 'smoothed' : 'standard'
+  }
+}
+
+// ============================================================================
+// WAPE - Weighted Absolute Percentage Error
+// ============================================================================
+
+/**
  * WAPE - Weighted Absolute Percentage Error
  * Total absolute error divided by total actual
  * Good for: Varying SKU volumes (high-volume items weighted more)
@@ -58,6 +201,10 @@ export function calculateWAPE(actual: number[], forecast: number[]): number | nu
   return (sumAbsError / sumActual) * 100
 }
 
+// ============================================================================
+// RMSE - Root Mean Square Error
+// ============================================================================
+
 /**
  * RMSE - Root Mean Square Error
  * Square root of average squared errors
@@ -76,6 +223,10 @@ export function calculateRMSE(actual: number[], forecast: number[]): number | nu
 
   return Math.sqrt(sumSquaredErrors / actual.length)
 }
+
+// ============================================================================
+// WASE - Weighted Absolute Scaled Error
+// ============================================================================
 
 /**
  * WASE - Weighted Absolute Scaled Error
@@ -104,6 +255,10 @@ export function calculateWASE(actual: number[], forecast: number[]): number | nu
   return forecastError / naiveError
 }
 
+// ============================================================================
+// Bias - Forecast Bias
+// ============================================================================
+
 /**
  * Bias - Forecast Bias
  * Average of (forecast - actual)
@@ -119,6 +274,10 @@ export function calculateBias(actual: number[], forecast: number[]): number | nu
   return sum / actual.length
 }
 
+// ============================================================================
+// Naive Forecast
+// ============================================================================
+
 /**
  * Generate naive forecast (previous period = next period)
  * Used as a baseline for comparison
@@ -128,9 +287,10 @@ export function naiveForecast(actual: number[]): number[] {
   return [actual[0], ...actual.slice(0, -1)]
 }
 
-/**
- * Calculate all metrics at once
- */
+// ============================================================================
+// Combined Metrics Calculation
+// ============================================================================
+
 export interface AllMetrics {
   mape: number | null
   wape: number | null
@@ -157,14 +317,84 @@ export function calculateAllMetrics(
 }
 
 /**
- * Get interpretation for metric value
+ * Extended metrics calculation with source tracking and data quality
  */
+export interface ExtendedMetricsResult {
+  metrics: AllMetrics
+  source: ForecastSource
+  dataTier: DataTier
+  primaryMetric: 'mape' | 'wape'
+  dataQuality: {
+    actualPeriods: number
+    forecastPeriods: number
+    alignedPeriods: number
+    zeroPeriods: number
+    mapeMethod: 'standard' | 'smoothed'
+  }
+}
+
+export function calculateExtendedMetrics(
+  actuals: number[],
+  forecasts: number[],
+  hasIPForecast: boolean
+): ExtendedMetricsResult {
+  const dataTier = getDataTier(actuals.length)
+  const primaryMetric = selectPrimaryMetric(actuals)
+  const zeroPeriods = actuals.filter(a => a === 0).length
+
+  // Determine source
+  let source: ForecastSource = 'inventory_planner'
+  if (dataTier.tier === 'insufficient') {
+    source = 'insufficient_data'
+  } else if (!hasIPForecast) {
+    source = 'naive_benchmark'
+  }
+
+  // Calculate smoothed MAPE if there are zero periods
+  const smoothedResult = calculateSmoothedMAPE(actuals, forecasts)
+
+  const metrics: AllMetrics = {
+    mape: smoothedResult.value,
+    wape: calculateWAPE(actuals, forecasts),
+    rmse: dataTier.metricsAvailable.includes('rmse') ? calculateRMSE(actuals, forecasts) : null,
+    wase: dataTier.metricsAvailable.includes('wase') ? calculateWASE(actuals, forecasts) : null,
+    bias: calculateBias(actuals, forecasts),
+    naiveMape: calculateMAPE(actuals, naiveForecast(actuals)),
+  }
+
+  return {
+    metrics,
+    source,
+    dataTier,
+    primaryMetric,
+    dataQuality: {
+      actualPeriods: actuals.length,
+      forecastPeriods: forecasts.length,
+      alignedPeriods: Math.min(actuals.length, forecasts.length),
+      zeroPeriods,
+      mapeMethod: smoothedResult.method
+    }
+  }
+}
+
+// ============================================================================
+// Interpretation Helpers
+// ============================================================================
+
 export function interpretMAPE(value: number): string {
   if (value < 10) return 'Excellent'
   if (value < 20) return 'Good'
   if (value < 30) return 'Acceptable'
   if (value < 50) return 'Poor'
   return 'Very Poor'
+}
+
+export function getMAPETier(value: number): 'excellent' | 'good' | 'acceptable' | 'poor' | 'very_poor' {
+  if (value < 10) return 'excellent'
+  if (value < 20) return 'good'
+  if (value < 30) return 'acceptable'
+  if (value < 50) return 'poor'
+  return 'very_poor'
 }
 
 export function interpretWASE(value: number): string {
@@ -176,8 +406,59 @@ export function interpretWASE(value: number): string {
 }
 
 export function interpretBias(value: number, avgActual: number): string {
+  if (avgActual === 0) return 'Cannot interpret (no sales)'
   const biasPercent = (value / avgActual) * 100
   if (Math.abs(biasPercent) < 5) return 'Well balanced'
   if (biasPercent > 0) return `Over-forecasting by ${biasPercent.toFixed(1)}%`
   return `Under-forecasting by ${Math.abs(biasPercent).toFixed(1)}%`
+}
+
+/**
+ * Get display label for forecast source
+ */
+export function getForecastSourceLabel(source: ForecastSource): {
+  label: string
+  variant: 'default' | 'warning' | 'secondary'
+  tooltip: string
+} {
+  switch (source) {
+    case 'inventory_planner':
+      return {
+        label: 'IP Forecast',
+        variant: 'default',
+        tooltip: 'Accuracy measured against Inventory Planner forecasts'
+      }
+    case 'naive_benchmark':
+      return {
+        label: 'Benchmark Only',
+        variant: 'warning',
+        tooltip: 'No IP forecast data available. Showing naive benchmark (previous period = next forecast) for reference only.'
+      }
+    case 'insufficient_data':
+      return {
+        label: 'Limited Data',
+        variant: 'secondary',
+        tooltip: 'Fewer than 3 periods of data. Metrics may be unreliable.'
+      }
+  }
+}
+
+/**
+ * Get confidence label for data tier
+ */
+export function getConfidenceLabel(confidence: DataTier['confidence']): {
+  label: string
+  bars: number
+  color: string
+} {
+  switch (confidence) {
+    case 'high':
+      return { label: 'High confidence', bars: 4, color: 'bg-green-500' }
+    case 'medium':
+      return { label: 'Medium confidence', bars: 3, color: 'bg-yellow-500' }
+    case 'low':
+      return { label: 'Low confidence', bars: 2, color: 'bg-orange-500' }
+    case 'none':
+      return { label: 'Insufficient data', bars: 0, color: 'bg-gray-300' }
+  }
 }

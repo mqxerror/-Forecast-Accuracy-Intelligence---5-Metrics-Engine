@@ -1,0 +1,304 @@
+{
+  "name": "Inventory Intelligence - Full Sync",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "schedule",
+      "name": "Schedule (Every 6 Hours)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 480]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://app.inventory-planner.com/api/v1/variants",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "1000"
+            },
+            {
+              "name": "include",
+              "value": "orders_by_month,forecast_by_period"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "fetch-ip-variants",
+      "name": "Fetch IP Variants",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 380],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Inventory Planner API Key"
+        }
+      },
+      "notes": "Replace YOUR_CREDENTIAL_ID with your actual n8n credential ID for Inventory Planner"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract variants array from response\nconst response = $input.all()[0].json;\n\n// Handle different response structures\nlet variants = [];\nif (Array.isArray(response)) {\n  variants = response;\n} else if (response.variants && Array.isArray(response.variants)) {\n  variants = response.variants;\n} else if (response.data && Array.isArray(response.data)) {\n  variants = response.data;\n}\n\nconsole.log(`Processing ${variants.length} variants`);\n\n// Return as array of items for next node\nreturn variants.map(variant => ({ json: variant }));"
+      },
+      "id": "extract-variants",
+      "name": "Extract Variants",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 380]
+    },
+    {
+      "parameters": {
+        "batchSize": 500,
+        "options": {}
+      },
+      "id": "split-batches",
+      "name": "Split Into Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [920, 380]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collect all variants in this batch\nconst variants = $input.all().map(item => item.json);\n\nconsole.log(`Batch contains ${variants.length} variants`);\n\nreturn [{\n  json: {\n    event: 'import_variants',\n    variants: variants,\n    batch_info: {\n      count: variants.length,\n      timestamp: new Date().toISOString()\n    }\n  }\n}];"
+      },
+      "id": "prepare-payload",
+      "name": "Prepare Webhook Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1140, 380]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.INVENTORY_INTELLIGENCE_URL }}/api/sync/webhook",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-webhook-secret",
+              "value": "={{ $env.N8N_WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 300000
+        }
+      },
+      "id": "send-to-webhook",
+      "name": "Send to Inventory Intelligence",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1360, 380]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate results from all batches\nconst results = $input.all();\n\nlet totalReceived = 0;\nlet totalImported = 0;\nlet totalRejected = 0;\nlet totalWarnings = 0;\nlet totalErrors = 0;\n\nfor (const result of results) {\n  const stats = result.json?.stats || {};\n  totalReceived += stats.received || 0;\n  totalImported += stats.imported || 0;\n  totalRejected += stats.rejected || 0;\n  totalWarnings += stats.warnings || 0;\n  totalErrors += stats.errors || 0;\n}\n\nreturn [{\n  json: {\n    success: true,\n    summary: {\n      total_received: totalReceived,\n      total_imported: totalImported,\n      total_rejected: totalRejected,\n      total_warnings: totalWarnings,\n      total_errors: totalErrors,\n      sync_completed_at: new Date().toISOString()\n    },\n    batch_results: results.map(r => r.json)\n  }\n}];"
+      },
+      "id": "aggregate-results",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1580, 380]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-success",
+              "leftValue": "={{ $json.summary.total_errors }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-errors",
+      "name": "Check for Errors",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1800, 380]
+    },
+    {
+      "parameters": {
+        "content": "## Sync Successful!\n\n**Total Imported:** {{ $json.summary.total_imported }}\n**Warnings:** {{ $json.summary.total_warnings }}\n**Completed:** {{ $json.summary.sync_completed_at }}",
+        "height": 160,
+        "width": 280
+      },
+      "id": "success-note",
+      "name": "Success",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2020, 280]
+    },
+    {
+      "parameters": {
+        "content": "## Sync Had Errors\n\n**Imported:** {{ $json.summary.total_imported }}\n**Rejected:** {{ $json.summary.total_rejected }}\n**Errors:** {{ $json.summary.total_errors }}\n\nCheck the batch_results for details.",
+        "height": 180,
+        "width": 280
+      },
+      "id": "error-note",
+      "name": "Errors Found",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2020, 480]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch IP Variants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule (Every 6 Hours)": {
+      "main": [
+        [
+          {
+            "node": "Fetch IP Variants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch IP Variants": {
+      "main": [
+        [
+          {
+            "node": "Extract Variants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Variants": {
+      "main": [
+        [
+          {
+            "node": "Split Into Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Into Batches": {
+      "main": [
+        [
+          {
+            "node": "Prepare Webhook Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Webhook Payload": {
+      "main": [
+        [
+          {
+            "node": "Send to Inventory Intelligence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to Inventory Intelligence": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Check for Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "inventory-intelligence"
+    }
+  ]
+}

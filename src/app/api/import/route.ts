@@ -75,7 +75,13 @@ export async function POST(request: NextRequest) {
           product_type: v.product_type ? String(v.product_type) : undefined,
           image: v.image ? String(v.image) : undefined,
           price: v.price != null ? Number(v.price) : undefined,
-          cost_price: v.cost_price != null ? Number(v.cost_price) : undefined,
+          // Check multiple possible cost field names from Inventory Planner
+          cost_price: v.cost_price != null ? Number(v.cost_price)
+            : v.cost != null ? Number(v.cost)
+            : v.unit_cost != null ? Number(v.unit_cost)
+            : v.average_cost != null ? Number(v.average_cost)
+            : v.cogs != null ? Number(v.cogs)
+            : undefined,
           in_stock: Number(v.in_stock) || 0,
           purchase_orders_qty: Number(v.purchase_orders_qty) || 0,
           last_7_days_sales: Number(v.last_7_days_sales) || 0,
@@ -108,9 +114,9 @@ export async function POST(request: NextRequest) {
       console.log(`Batch ${i / batchSize}: Inserting ${transformedBatch.length} variants`)
       console.log('Sample variant:', JSON.stringify(transformedBatch[0], null, 2))
 
-      // @ts-ignore - Supabase types are too strict
       const { error, data } = await supabase
         .from('variants')
+        // @ts-ignore - Supabase types are too strict
         .upsert(transformedBatch, { onConflict: 'id' })
         .select('id')
 
@@ -214,9 +220,9 @@ export async function POST(request: NextRequest) {
       for (let i = 0; i < metricsToInsert.length; i += 500) {
         const batch = metricsToInsert.slice(i, i + 500)
         console.log(`Inserting batch of ${batch.length} metrics`)
-        // @ts-ignore - Supabase types are too strict
         const { error, data } = await supabase
           .from('forecast_metrics')
+          // @ts-ignore - Supabase types are too strict
           .upsert(batch, { onConflict: 'variant_id' })
           .select('variant_id')
 

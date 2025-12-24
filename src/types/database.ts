@@ -6,6 +6,63 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[]
 
+// Dashboard Summary RPC Response Type
+export interface DashboardSummaryResponse {
+  stats: {
+    total_skus: number
+    oos_count: number
+    reorder_count: number
+    out_of_stock_count: number
+    overstocked_count: number
+    total_value: number
+    total_lost_revenue: number
+  }
+  accuracy: {
+    avg_mape: number
+    avg_wape: number
+    avg_rmse: number
+    avg_bias: number
+    count: number
+  }
+  priority_items: {
+    id: string
+    sku: string
+    title: string | null
+    brand: string | null
+    in_stock: number
+    replenishment: number
+    to_order: number
+    lead_time: number | null
+    oos: number
+    forecasted_lost_revenue: number | null
+  }[]
+  oos_items: {
+    id: string
+    sku: string
+    title: string | null
+    brand: string | null
+    oos: number
+    oos_last_60_days: number
+    forecasted_lost_revenue: number | null
+  }[]
+  last_sync: {
+    id: string
+    source: string | null
+    status: string | null
+    records_fetched: number | null
+    records_updated: number | null
+    started_at: string | null
+    completed_at: string | null
+  } | null
+  mape_distribution: {
+    excellent: number
+    good: number
+    acceptable: number
+    poor: number
+    very_poor: number
+  }
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -265,12 +322,215 @@ export interface Database {
           created_at?: string
         }
       }
+      sync_sessions: {
+        Row: {
+          id: string
+          session_token: string
+          source: string | null
+          total_expected_chunks: number | null
+          chunks_received: number
+          total_expected_records: number | null
+          records_processed: number
+          records_failed: number
+          records_skipped: number
+          status: 'pending' | 'in_progress' | 'completed' | 'failed' | 'paused' | 'cancelled'
+          started_at: string
+          last_activity_at: string
+          completed_at: string | null
+          error_message: string | null
+          metadata: Json | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          session_token: string
+          source?: string | null
+          total_expected_chunks?: number | null
+          chunks_received?: number
+          total_expected_records?: number | null
+          records_processed?: number
+          records_failed?: number
+          records_skipped?: number
+          status?: 'pending' | 'in_progress' | 'completed' | 'failed' | 'paused' | 'cancelled'
+          started_at?: string
+          last_activity_at?: string
+          completed_at?: string | null
+          error_message?: string | null
+          metadata?: Json | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          session_token?: string
+          source?: string | null
+          total_expected_chunks?: number | null
+          chunks_received?: number
+          total_expected_records?: number | null
+          records_processed?: number
+          records_failed?: number
+          records_skipped?: number
+          status?: 'pending' | 'in_progress' | 'completed' | 'failed' | 'paused' | 'cancelled'
+          started_at?: string
+          last_activity_at?: string
+          completed_at?: string | null
+          error_message?: string | null
+          metadata?: Json | null
+          created_at?: string
+        }
+      }
+      sync_chunks: {
+        Row: {
+          id: string
+          session_id: string
+          chunk_index: number
+          records_in_chunk: number
+          records_processed: number
+          records_failed: number
+          status: 'pending' | 'processing' | 'completed' | 'failed'
+          received_at: string
+          started_at: string | null
+          completed_at: string | null
+          error_message: string | null
+          processing_time_ms: number | null
+        }
+        Insert: {
+          id?: string
+          session_id: string
+          chunk_index: number
+          records_in_chunk?: number
+          records_processed?: number
+          records_failed?: number
+          status?: 'pending' | 'processing' | 'completed' | 'failed'
+          received_at?: string
+          started_at?: string | null
+          completed_at?: string | null
+          error_message?: string | null
+          processing_time_ms?: number | null
+        }
+        Update: {
+          id?: string
+          session_id?: string
+          chunk_index?: number
+          records_in_chunk?: number
+          records_processed?: number
+          records_failed?: number
+          status?: 'pending' | 'processing' | 'completed' | 'failed'
+          received_at?: string
+          started_at?: string | null
+          completed_at?: string | null
+          error_message?: string | null
+          processing_time_ms?: number | null
+        }
+      }
+      sync_errors: {
+        Row: {
+          id: string
+          session_id: string | null
+          chunk_index: number | null
+          record_index: number | null
+          sku: string | null
+          variant_id: string | null
+          error_type: 'validation' | 'transform' | 'database' | 'unknown'
+          error_code: string | null
+          error_message: string
+          field_name: string | null
+          raw_value: string | null
+          raw_record: Json | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          session_id?: string | null
+          chunk_index?: number | null
+          record_index?: number | null
+          sku?: string | null
+          variant_id?: string | null
+          error_type: 'validation' | 'transform' | 'database' | 'unknown'
+          error_code?: string | null
+          error_message: string
+          field_name?: string | null
+          raw_value?: string | null
+          raw_record?: Json | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          session_id?: string | null
+          chunk_index?: number | null
+          record_index?: number | null
+          sku?: string | null
+          variant_id?: string | null
+          error_type?: 'validation' | 'transform' | 'database' | 'unknown'
+          error_code?: string | null
+          error_message?: string
+          field_name?: string | null
+          raw_value?: string | null
+          raw_record?: Json | null
+          created_at?: string
+        }
+      }
+      sync_progress: {
+        Row: {
+          id: string
+          session_id: string | null
+          status: 'idle' | 'syncing' | 'processing' | 'completed' | 'failed'
+          current_batch: number
+          total_batches: number
+          current_chunk: number
+          total_chunks: number
+          records_processed: number
+          total_records: number
+          errors_count: number
+          current_sku: string | null
+          started_at: string | null
+          estimated_completion: string | null
+          last_update: string
+          message: string | null
+        }
+        Insert: {
+          id?: string
+          session_id?: string | null
+          status?: 'idle' | 'syncing' | 'processing' | 'completed' | 'failed'
+          current_batch?: number
+          total_batches?: number
+          current_chunk?: number
+          total_chunks?: number
+          records_processed?: number
+          total_records?: number
+          errors_count?: number
+          current_sku?: string | null
+          started_at?: string | null
+          estimated_completion?: string | null
+          last_update?: string
+          message?: string | null
+        }
+        Update: {
+          id?: string
+          session_id?: string | null
+          status?: 'idle' | 'syncing' | 'processing' | 'completed' | 'failed'
+          current_batch?: number
+          total_batches?: number
+          current_chunk?: number
+          total_chunks?: number
+          records_processed?: number
+          total_records?: number
+          errors_count?: number
+          current_sku?: string | null
+          started_at?: string | null
+          estimated_completion?: string | null
+          last_update?: string
+          message?: string | null
+        }
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      get_dashboard_summary: {
+        Args: Record<string, never>
+        Returns: DashboardSummaryResponse
+      }
     }
     Enums: {
       [_ in never]: never
@@ -284,3 +544,13 @@ export type ForecastMetric = Database['public']['Tables']['forecast_metrics']['R
 export type BusinessSummary = Database['public']['Tables']['business_summary']['Row']
 export type SyncMetric = Database['public']['Tables']['sync_metrics']['Row']
 export type Profile = Database['public']['Tables']['profiles']['Row']
+export type SyncSession = Database['public']['Tables']['sync_sessions']['Row']
+export type SyncChunk = Database['public']['Tables']['sync_chunks']['Row']
+export type SyncError = Database['public']['Tables']['sync_errors']['Row']
+export type SyncProgress = Database['public']['Tables']['sync_progress']['Row']
+
+// Insert types
+export type SyncSessionInsert = Database['public']['Tables']['sync_sessions']['Insert']
+export type SyncChunkInsert = Database['public']['Tables']['sync_chunks']['Insert']
+export type SyncErrorInsert = Database['public']['Tables']['sync_errors']['Insert']
+export type SyncProgressUpdate = Database['public']['Tables']['sync_progress']['Update']

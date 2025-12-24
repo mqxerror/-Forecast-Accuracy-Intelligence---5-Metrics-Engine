@@ -1,8 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -15,78 +14,61 @@ import {
 } from '@/components/ui/table'
 import { Header } from '@/components/layout/header'
 import { TableSkeleton } from '@/components/shared/loading-skeleton'
+import { AdvancedFilters } from '@/components/filters/advanced-filters'
+import { RowActions } from '@/components/inventory/row-actions'
 import { formatCurrency } from '@/lib/utils/format-currency'
 import { formatNumber } from '@/lib/utils/format-number'
-import { Search, ChevronLeft, ChevronRight, ArrowUpDown } from 'lucide-react'
-import type { Variant } from '@/types/database'
-
-interface InventoryResponse {
-  variants: Variant[]
-  count: number
-  limit: number
-  offset: number
-  hasMore: boolean
-}
+import { exportInventoryToCsv } from '@/lib/utils/export-csv'
+import { ChevronLeft, ChevronRight, ArrowUpDown, Eye } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { useInventory, type InventoryFilters } from '@/hooks/use-inventory'
+import { useWatchList } from '@/hooks/use-watch-list'
+import { SalesSparkline } from '@/components/charts/sales-sparkline'
 
 type SortField = 'sku' | 'in_stock' | 'replenishment' | 'oos' | 'last_30_days_sales'
-type SortDirection = 'asc' | 'desc'
 
 export default function InventoryPage() {
-  const [data, setData] = useState<InventoryResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [page, setPage] = useState(0)
-  const [sortField, setSortField] = useState<SortField>('replenishment')
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  const router = useRouter()
+  const [isExporting, setIsExporting] = useState(false)
+  const { isWatched, toggleWatch, watchCount } = useWatchList()
 
-  const pageSize = 25
+  const {
+    items,
+    totalCount,
+    isLoading,
+    filters,
+    page,
+    totalPages,
+    updateFilters,
+    goToPage,
+  } = useInventory()
 
-  // Debounce search
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearch(search)
-      setPage(0)
-    }, 300)
-    return () => clearTimeout(timer)
-  }, [search])
-
-  // Fetch data
-  useEffect(() => {
-    async function fetchData() {
-      setLoading(true)
-      try {
-        const params = new URLSearchParams({
-          limit: String(pageSize),
-          offset: String(page * pageSize),
-          orderBy: sortField,
-          orderDirection: sortDirection,
-        })
-        if (debouncedSearch) {
-          params.append('search', debouncedSearch)
-        }
-
-        const response = await fetch(`/api/inventory?${params}`)
-        const json = await response.json()
-        setData(json)
-      } catch (error) {
-        console.error('Failed to fetch inventory:', error)
-      } finally {
-        setLoading(false)
-      }
-    }
-    fetchData()
-  }, [page, debouncedSearch, sortField, sortDirection])
-
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')
-    } else {
-      setSortField(field)
-      setSortDirection('desc')
-    }
-    setPage(0)
+  const handleRowClick = (sku: string) => {
+    router.push(`/inventory/${encodeURIComponent(sku)}`)
   }
+
+  const handleFilterChange = useCallback((newFilters: Partial<InventoryFilters>) => {
+    updateFilters(newFilters)
+  }, [updateFilters])
+
+  const handleExport = useCallback(async () => {
+    setIsExporting(true)
+    try {
+      // Fetch all items for export (up to 10000)
+      const params = new URLSearchParams({ limit: '10000', offset: '0' })
+      if (filters.search) params.set('search', filters.search)
+      if (filters.brand) params.set('brand', filters.brand)
+      if (filters.productType) params.set('productType', filters.productType)
+
+      const response = await fetch(`/api/inventory?${params}`)
+      const data = await response.json()
+      exportInventoryToCsv(data.variants)
+    } catch (error) {
+      console.error('Export failed:', error)
+    } finally {
+      setIsExporting(false)
+    }
+  }, [filters])
 
   const SortHeader = ({
     field,
@@ -95,10 +77,7 @@ export default function InventoryPage() {
     field: SortField
     children: React.ReactNode
   }) => (
-    <TableHead
-      className="cursor-pointer hover:bg-gray-50"
-      onClick={() => handleSort(field)}
-    >
+    <TableHead className="cursor-pointer hover:bg-gray-50">
       <div className="flex items-center gap-1">
         {children}
         <ArrowUpDown className="h-3 w-3 text-gray-400" />
@@ -106,11 +85,19 @@ export default function InventoryPage() {
     </TableHead>
   )
 
-  const getStockStatus = (variant: Variant) => {
-    if (variant.oos > 0) {
-      return <Badge variant="destructive">OOS {variant.oos}d</Badge>
+  const getStockStatus = (item: typeof items[0]) => {
+    // Critical: Negative inventory (oversold)
+    if (item.in_stock < 0) {
+      return (
+        <Badge variant="destructive" className="bg-red-600 text-white animate-pulse">
+          Oversold
+        </Badge>
+      )
     }
-    if (variant.replenishment > 0) {
+    if (item.oos > 0) {
+      return <Badge variant="destructive">OOS {item.oos}d</Badge>
+    }
+    if (item.replenishment > 0) {
       return (
         <Badge className="bg-yellow-100 text-yellow-800 hover:bg-yellow-100">
           Reorder
@@ -124,34 +111,32 @@ export default function InventoryPage() {
     )
   }
 
-  const totalPages = data ? Math.ceil(data.count / pageSize) : 0
-
   return (
     <div className="flex flex-col">
       <Header
         title="Inventory"
-        subtitle={data ? `${formatNumber(data.count)} products` : 'Loading...'}
+        subtitle={
+          watchCount > 0
+            ? `${formatNumber(totalCount)} products | ${watchCount} watched`
+            : `${formatNumber(totalCount)} products`
+        }
         showSyncButton={false}
       />
 
       <div className="p-6">
         <Card>
           <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>All Products</CardTitle>
-              <div className="relative w-64">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-                <Input
-                  placeholder="Search SKU or product..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="pl-9"
-                />
-              </div>
-            </div>
+            <CardTitle className="mb-4">All Products</CardTitle>
+            <AdvancedFilters
+              filters={filters}
+              onFilterChange={handleFilterChange}
+              onExport={handleExport}
+              isExporting={isExporting}
+              totalCount={totalCount}
+            />
           </CardHeader>
           <CardContent>
-            {loading && !data ? (
+            {isLoading && items.length === 0 ? (
               <TableSkeleton rows={10} />
             ) : (
               <>
@@ -162,51 +147,84 @@ export default function InventoryPage() {
                         <SortHeader field="sku">SKU</SortHeader>
                         <TableHead>Product</TableHead>
                         <SortHeader field="in_stock">In Stock</SortHeader>
-                        <SortHeader field="last_30_days_sales">
-                          30d Sales
-                        </SortHeader>
                         <SortHeader field="replenishment">Reorder Qty</SortHeader>
                         <SortHeader field="oos">Status</SortHeader>
+                        <TableHead>Trend</TableHead>
                         <TableHead className="text-right">Value</TableHead>
+                        <TableHead className="w-10"></TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {data?.variants.length === 0 ? (
+                      {items.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={7} className="py-8 text-center text-gray-500">
+                          <TableCell colSpan={8} className="py-8 text-center text-gray-500">
                             No products found
                           </TableCell>
                         </TableRow>
                       ) : (
-                        data?.variants.map((variant) => (
-                          <TableRow key={variant.id}>
+                        items.map((item) => (
+                          <TableRow
+                            key={item.id}
+                            className={`cursor-pointer transition-colors group ${
+                              item.in_stock < 0
+                                ? 'bg-red-50 hover:bg-red-100 border-l-4 border-l-red-500'
+                                : 'hover:bg-blue-50'
+                            }`}
+                            onClick={() => handleRowClick(item.sku)}
+                          >
                             <TableCell className="font-mono text-sm">
-                              {variant.sku}
+                              <div className="flex items-center gap-1">
+                                {isWatched(item.sku) && (
+                                  <Eye className="h-3 w-3 text-blue-500" />
+                                )}
+                                {item.sku}
+                              </div>
                             </TableCell>
                             <TableCell>
                               <div className="max-w-[200px] truncate">
-                                {variant.title || '-'}
+                                {item.title || '-'}
                               </div>
-                              {variant.brand && (
+                              {item.brand && (
                                 <div className="text-xs text-gray-500">
-                                  {variant.brand}
+                                  {item.brand}
                                 </div>
                               )}
                             </TableCell>
-                            <TableCell>{formatNumber(variant.in_stock)}</TableCell>
                             <TableCell>
-                              {formatNumber(variant.last_30_days_sales)}
+                              {item.in_stock < 0 ? (
+                                <span className="font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded">
+                                  {formatNumber(item.in_stock)}
+                                </span>
+                              ) : item.in_stock === 0 ? (
+                                <span className="text-gray-400">0</span>
+                              ) : (
+                                formatNumber(item.in_stock)
+                              )}
                             </TableCell>
                             <TableCell>
-                              {variant.replenishment > 0
-                                ? formatNumber(variant.replenishment)
+                              {item.replenishment > 0
+                                ? formatNumber(item.replenishment)
                                 : '-'}
                             </TableCell>
-                            <TableCell>{getStockStatus(variant)}</TableCell>
+                            <TableCell>{getStockStatus(item)}</TableCell>
+                            <TableCell>
+                              <SalesSparkline
+                                last7Days={item.last_7_days_sales || 0}
+                                last30Days={item.last_30_days_sales || 0}
+                                last90Days={item.last_90_days_sales || 0}
+                              />
+                            </TableCell>
                             <TableCell className="text-right">
                               {formatCurrency(
-                                (variant.in_stock || 0) * (variant.cost_price || 0)
+                                (item.in_stock || 0) * (item.cost_price || 0)
                               )}
+                            </TableCell>
+                            <TableCell>
+                              <RowActions
+                                item={item}
+                                isWatched={isWatched(item.sku)}
+                                onWatchToggle={toggleWatch}
+                              />
                             </TableCell>
                           </TableRow>
                         ))
@@ -218,27 +236,25 @@ export default function InventoryPage() {
                 {totalPages > 1 && (
                   <div className="mt-4 flex items-center justify-between">
                     <p className="text-sm text-gray-500">
-                      Showing {page * pageSize + 1}-
-                      {Math.min((page + 1) * pageSize, data?.count || 0)} of{' '}
-                      {formatNumber(data?.count || 0)}
+                      Page {page} of {totalPages} ({formatNumber(totalCount)} total)
                     </p>
                     <div className="flex gap-2">
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => setPage((p) => Math.max(0, p - 1))}
-                        disabled={page === 0}
+                        onClick={() => goToPage(page - 1)}
+                        disabled={page <= 1}
                       >
                         <ChevronLeft className="h-4 w-4" />
                       </Button>
                       <span className="flex items-center px-2 text-sm">
-                        Page {page + 1} of {totalPages}
+                        Page {page} of {totalPages}
                       </span>
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => setPage((p) => p + 1)}
-                        disabled={!data?.hasMore}
+                        onClick={() => goToPage(page + 1)}
+                        disabled={page >= totalPages}
                       >
                         <ChevronRight className="h-4 w-4" />
                       </Button>

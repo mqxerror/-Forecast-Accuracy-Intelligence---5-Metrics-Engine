@@ -1,19 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createSyncRecord, completeSyncRecord } from '@/lib/supabase/queries/summary'
-import { calculateMAPE, calculateWAPE, calculateRMSE, calculateBias } from '@/lib/utils/calculate-metrics'
+import {
+  calculateMAPE,
+  calculateWAPE,
+  calculateRMSE,
+  calculateBias,
+  calculateSmoothedMAPE,
+  getDataTier,
+  selectPrimaryMetric,
+  type ForecastSource
+} from '@/lib/utils/calculate-metrics'
+import { validateVariants, getErrorSummary, getWarningSummary } from '@/lib/validation/variant-schema'
+import { detectFieldMappings, getCostValue, getLostRevenueValue } from '@/lib/utils/field-detection'
 import type { Database } from '@/types/database'
 
 // Route segment config for large file uploads
 export const maxDuration = 300 // 5 minutes
 export const dynamic = 'force-dynamic'
 
-// This needs to be set in next.config.ts experimental.serverActions.bodySizeLimit
-// For now, we'll handle streaming the body ourselves
-
 type VariantInsert = Database['public']['Tables']['variants']['Insert']
 type MetricInsert = Database['public']['Tables']['forecast_metrics']['Insert']
 type Variant = Database['public']['Tables']['variants']['Row']
+
+interface ExtendedMetricInsert extends MetricInsert {
+  forecast_source?: ForecastSource
+  data_tier?: string
+  period_count?: number
+  zero_periods?: number
+  primary_metric?: string
+}
 
 /**
  * POST /api/upload/json - Upload variant data as JSON body
@@ -112,19 +128,34 @@ export async function POST(request: NextRequest) {
 
     console.log(`Processing ${variants.length} variants`)
 
+    // STEP 1: Validate all variants
+    const validation = validateVariants(variants)
+    console.log(`Validation: ${validation.summary.passed} passed, ${validation.summary.failed} failed`)
+
+    // STEP 2: Detect field mappings
+    const fieldMappings = detectFieldMappings(variants)
+    console.log(`Field detection: ${fieldMappings.summary}`)
+
+    // Use validated variants
+    const validVariants = validation.valid
+
     // Transform and insert in batches
     const batchSize = 500
     let imported = 0
     let errors = 0
 
-    for (let i = 0; i < variants.length; i += batchSize) {
-      const batch = variants.slice(i, i + batchSize)
+    for (let i = 0; i < validVariants.length; i += batchSize) {
+      const batch = validVariants.slice(i, i + batchSize)
 
       const transformedBatch = batch.map((v): VariantInsert | null => {
         const variantId = v.id ? String(v.id) : null
         const sku = v.sku ? String(v.sku) : ''
 
         if (!variantId || !sku) return null
+
+        // Use detected field mappings
+        const costValue = getCostValue(v as Record<string, unknown>, fieldMappings.cost.detectedField || undefined)
+        const lostRevenueValue = getLostRevenueValue(v as Record<string, unknown>, fieldMappings.lostRevenue.detectedField || undefined)
 
         return {
           id: variantId,
@@ -135,7 +166,7 @@ export async function POST(request: NextRequest) {
           product_type: v.product_type ? String(v.product_type) : undefined,
           image: v.image ? String(v.image) : undefined,
           price: v.price != null ? Number(v.price) : undefined,
-          cost_price: v.cost_price != null ? Number(v.cost_price) : undefined,
+          cost_price: costValue ?? undefined,
           in_stock: Number(v.in_stock) || 0,
           purchase_orders_qty: Number(v.purchase_orders_qty) || 0,
           last_7_days_sales: Number(v.last_7_days_sales) || 0,
@@ -154,9 +185,7 @@ export async function POST(request: NextRequest) {
           lead_time: v.lead_time != null ? Number(v.lead_time) : undefined,
           oos: Number(v.oos) || 0,
           oos_last_60_days: Number(v.oos_last_60_days) || 0,
-          forecasted_lost_revenue: v.forecasted_lost_revenue_lead_time != null
-            ? Number(v.forecasted_lost_revenue_lead_time)
-            : undefined,
+          forecasted_lost_revenue: lostRevenueValue ?? undefined,
           raw_data: v as Variant['raw_data'],
           synced_at: new Date().toISOString()
         }
@@ -177,11 +206,11 @@ export async function POST(request: NextRequest) {
       }
 
       // Log progress
-      console.log(`Progress: ${Math.min(i + batchSize, variants.length)}/${variants.length}`)
+      console.log(`Progress: ${Math.min(i + batchSize, validVariants.length)}/${validVariants.length}`)
     }
 
-    // Calculate forecast metrics
-    const metricsCalculated = await calculateAllMetrics(supabase)
+    // Calculate forecast metrics with enhanced tracking
+    const metricsCalculated = await calculateAllMetricsEnhanced(supabase)
 
     // Update business summary
     await updateBusinessSummary(supabase)
@@ -198,9 +227,28 @@ export async function POST(request: NextRequest) {
       stats: {
         received: variants.length,
         imported,
+        rejected: validation.summary.failed,
+        warnings: validation.summary.withWarnings,
         errors,
         metricsCalculated,
         durationMs: duration
+      },
+      validation: {
+        passed: validation.summary.passed,
+        failed: validation.summary.failed,
+        errorSummary: getErrorSummary(validation),
+        warningSummary: getWarningSummary(validation),
+        sampleErrors: validation.invalid.slice(0, 3)
+      },
+      fieldDetection: {
+        cost: {
+          detected: fieldMappings.cost.detectedField,
+          coverage: Math.round(fieldMappings.cost.coverage * 100),
+          alternatives: fieldMappings.cost.alternatives.map(a =>
+            `${a.field} (${Math.round(a.coverage * 100)}%)`
+          ).slice(0, 3)
+        },
+        needsConfirmation: fieldMappings.needsConfirmation
       }
     })
 
@@ -216,57 +264,119 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function calculateAllMetrics(supabase: ReturnType<typeof createAdminClient>): Promise<number> {
-  const { data: variantsWithSales } = await supabase
+async function calculateAllMetricsEnhanced(supabase: ReturnType<typeof createAdminClient>): Promise<number> {
+  const { data: variantsWithData } = await supabase
     .from('variants')
-    .select('id, sku, orders_by_month')
+    .select('id, sku, orders_by_month, forecast_by_period')
     .not('orders_by_month', 'is', null)
 
-  if (!variantsWithSales || variantsWithSales.length === 0) {
+  if (!variantsWithData || variantsWithData.length === 0) {
     return 0
   }
 
-  const metricsToInsert: MetricInsert[] = []
+  const metricsToInsert: ExtendedMetricInsert[] = []
 
-  for (const variant of variantsWithSales as { id: string; sku: string; orders_by_month: Variant['orders_by_month'] }[]) {
+  for (const variant of variantsWithData as {
+    id: string
+    sku: string
+    orders_by_month: Variant['orders_by_month']
+    forecast_by_period: Variant['forecast_by_period']
+  }[]) {
     try {
       const ordersByMonth = variant.orders_by_month as Record<string, Record<string, number>>
+      const forecastByPeriod = variant.forecast_by_period as Record<string, Record<string, number>> | null
+
       if (!ordersByMonth) continue
 
-      const monthlyData: { year: string; month: string; value: number }[] = []
+      // Parse actual sales data
+      const actualData: { key: string; value: number }[] = []
       for (const year of Object.keys(ordersByMonth).sort()) {
         const months = ordersByMonth[year]
         if (typeof months !== 'object') continue
         for (const month of Object.keys(months).sort((a, b) => Number(a) - Number(b))) {
-          monthlyData.push({ year, month, value: Number(months[month]) || 0 })
+          actualData.push({
+            key: `${year}-${month.padStart(2, '0')}`,
+            value: Number(months[month]) || 0
+          })
         }
       }
 
-      if (monthlyData.length < 6) continue
+      // Use tiered requirements (minimum 3 periods)
+      const dataTier = getDataTier(actualData.length)
+      if (dataTier.tier === 'insufficient') continue
 
-      const recentData = monthlyData.slice(-12)
-      const actual = recentData.map(d => d.value)
+      // Parse forecast data if available
+      const forecastData: { key: string; value: number }[] = []
+      let hasIPForecast = false
+      if (forecastByPeriod && typeof forecastByPeriod === 'object') {
+        for (const year of Object.keys(forecastByPeriod).sort()) {
+          const months = forecastByPeriod[year]
+          if (typeof months !== 'object') continue
+          for (const month of Object.keys(months).sort((a, b) => Number(a) - Number(b))) {
+            forecastData.push({
+              key: `${year}-${month.padStart(2, '0')}`,
+              value: Number(months[month]) || 0
+            })
+          }
+        }
+        hasIPForecast = forecastData.some(f => f.value > 0)
+      }
 
-      if (actual.every(v => v === 0)) continue
+      const recentActual = actualData.slice(-12)
+      const actual = recentActual.map(d => d.value)
+      const primaryMetric = selectPrimaryMetric(actual)
+      const zeroPeriods = actual.filter(v => v === 0).length
+
+      // Use actual forecasts if available, otherwise naive
+      let forecast: number[]
+      let forecastSource: ForecastSource = 'inventory_planner'
+
+      if (hasIPForecast && forecastData.length > 0) {
+        const forecastMap = new Map(forecastData.map(f => [f.key, f.value]))
+        forecast = recentActual.map(a => forecastMap.get(a.key) ?? 0)
+        if (!forecast.some(v => v > 0)) {
+          forecast = [actual[0], ...actual.slice(0, -1)]
+          forecastSource = 'naive_benchmark'
+        }
+      } else {
+        forecast = [actual[0], ...actual.slice(0, -1)]
+        forecastSource = 'naive_benchmark'
+      }
 
       const naiveForecast = [actual[0], ...actual.slice(0, -1)]
+      const naiveMape = calculateMAPE(actual, naiveForecast)
+      const smoothedResult = calculateSmoothedMAPE(actual, forecast)
+      const mape = smoothedResult.value
 
-      const mape = calculateMAPE(actual, naiveForecast)
-      const wape = calculateWAPE(actual, naiveForecast)
-      const rmse = calculateRMSE(actual, naiveForecast)
-      const bias = calculateBias(actual, naiveForecast)
+      const wape = calculateWAPE(actual, forecast)
+      const rmse = dataTier.metricsAvailable.includes('rmse') ? calculateRMSE(actual, forecast) : null
+      const bias = calculateBias(actual, forecast)
 
-      if (mape !== null && mape < 500) {
+      let wase: number | null = null
+      if (dataTier.metricsAvailable.includes('wase') && naiveMape !== null && naiveMape > 0) {
+        const forecastError = actual.reduce((sum, a, i) => sum + Math.abs(a - forecast[i]), 0)
+        const naiveError = actual.reduce((sum, a, i) => sum + Math.abs(a - naiveForecast[i]), 0)
+        wase = naiveError > 0 ? forecastError / naiveError : null
+      }
+
+      if (mape !== null) {
         metricsToInsert.push({
           variant_id: variant.id,
           sku: variant.sku,
           mape,
           wape,
           rmse,
+          wase,
           bias,
+          naive_mape: naiveMape,
           actual_values: actual,
-          forecast_values: naiveForecast,
-          calculated_at: new Date().toISOString()
+          forecast_values: forecast,
+          calculated_at: new Date().toISOString(),
+          forecast_source: forecastSource,
+          data_tier: dataTier.tier,
+          period_count: actual.length,
+          zero_periods: zeroPeriods,
+          primary_metric: primaryMetric
         })
       }
     } catch {

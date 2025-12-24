@@ -47,19 +47,36 @@ export function DataImport({ onImportComplete }: DataImportProps) {
   const [result, setResult] = useState<ImportResult | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Poll for sync status
+  // Smart polling for sync status - only poll frequently during active sync
   useEffect(() => {
+    let pollInterval: NodeJS.Timeout | null = null
+    let isMounted = true
+
     const fetchStatus = async () => {
+      if (!isMounted) return
+
       try {
         const res = await fetch('/api/sync/status')
         const data = await res.json()
+        if (!isMounted) return
+
         setSyncStatus(data.current)
 
         // If a sync is running, we're syncing from IP
-        if (data.current?.status === 'running') {
-          setSyncingIP(true)
+        const isRunning = data.current?.status === 'running'
+        setSyncingIP(isRunning)
+
+        // Adjust polling interval based on sync state
+        if (pollInterval) {
+          clearInterval(pollInterval)
+        }
+
+        if (isRunning) {
+          // Poll every 2 seconds during active sync
+          pollInterval = setInterval(fetchStatus, 2000)
         } else {
-          setSyncingIP(false)
+          // Poll every 30 seconds when idle (or stop polling altogether)
+          pollInterval = setInterval(fetchStatus, 30000)
         }
       } catch (error) {
         console.error('Error fetching sync status:', error)
@@ -69,9 +86,12 @@ export function DataImport({ onImportComplete }: DataImportProps) {
     // Initial fetch
     fetchStatus()
 
-    // Poll every 3 seconds if syncing
-    const interval = setInterval(fetchStatus, 3000)
-    return () => clearInterval(interval)
+    return () => {
+      isMounted = false
+      if (pollInterval) {
+        clearInterval(pollInterval)
+      }
+    }
   }, [])
 
   const handleSync = async () => {

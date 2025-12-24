@@ -1,5 +1,19 @@
-import { createClient } from '../server'
+import { createAdminClient } from '../admin'
 import type { Variant } from '@/types/database'
+
+// Columns for list views (excludes heavy JSON fields)
+const VARIANT_LIST_COLUMNS = `
+  id, sku, title, barcode, brand, product_type, image,
+  price, cost_price, in_stock, purchase_orders_qty,
+  last_7_days_sales, last_30_days_sales, last_90_days_sales,
+  last_180_days_sales, last_365_days_sales, total_sales,
+  forecasted_stock, current_forecast, replenishment, to_order,
+  minimum_stock, lead_time, oos, oos_last_60_days,
+  forecasted_lost_revenue, synced_at, created_at, updated_at
+` as const
+
+// Full columns including JSON data (for detail views only)
+const VARIANT_DETAIL_COLUMNS = '*'
 
 export interface VariantQueryOptions {
   limit?: number
@@ -27,11 +41,11 @@ export async function getVariants(options: VariantQueryOptions = {}) {
     minOOS,
   } = options
 
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   let query = supabase
     .from('variants')
-    .select('*', { count: 'exact' })
+    .select(VARIANT_LIST_COLUMNS, { count: 'exact' })
 
   // Search filter
   if (search) {
@@ -73,7 +87,7 @@ export async function getVariants(options: VariantQueryOptions = {}) {
  * Get a single variant by SKU
  */
 export async function getVariantBySku(sku: string): Promise<{ variant: Variant | null; error: string | null }> {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   const { data, error } = await supabase
     .from('variants')
@@ -92,7 +106,7 @@ export async function getVariantBySku(sku: string): Promise<{ variant: Variant |
  * Get a single variant by ID
  */
 export async function getVariantById(id: string) {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   const { data, error } = await supabase
     .from('variants')
@@ -111,7 +125,13 @@ export async function getVariantById(id: string) {
  * Get top priority items (highest replenishment needs)
  */
 export async function getTopPriorityItems(limit = 10) {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
+
+  // Get total count first
+  const { count: totalCount } = await supabase
+    .from('variants')
+    .select('*', { count: 'exact', head: true })
+    .gt('replenishment', 0)
 
   const { data, error } = await supabase
     .from('variants')
@@ -122,38 +142,46 @@ export async function getTopPriorityItems(limit = 10) {
 
   if (error) {
     console.error('Error fetching priority items:', error)
-    return { items: [], error: error.message }
+    return { items: [], totalCount: 0, error: error.message }
   }
 
-  return { items: data || [], error: null }
+  return { items: data || [], totalCount: totalCount || 0, error: null }
 }
 
 /**
- * Get out-of-stock items
+ * Get out-of-stock items (in_stock <= 0)
+ * Ordered by days OOS (oos field) to show longest OOS items first
  */
 export async function getOutOfStockItems(limit = 50) {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
+  // Get total count of currently out of stock items (in_stock <= 0)
+  const { count: totalCount } = await supabase
+    .from('variants')
+    .select('*', { count: 'exact', head: true })
+    .lte('in_stock', 0)
+
+  // Get items ordered by how long they've been OOS
   const { data, error } = await supabase
     .from('variants')
-    .select('id, sku, title, brand, oos, oos_last_60_days, forecasted_lost_revenue')
-    .gt('oos', 0)
-    .order('oos', { ascending: false })
+    .select('id, sku, title, brand, in_stock, oos, oos_last_60_days, forecasted_lost_revenue, replenishment, to_order, lead_time')
+    .lte('in_stock', 0)
+    .order('oos', { ascending: false, nullsFirst: false })
     .limit(limit)
 
   if (error) {
     console.error('Error fetching OOS items:', error)
-    return { items: [], error: error.message }
+    return { items: [], totalCount: 0, error: error.message }
   }
 
-  return { items: data || [], error: null }
+  return { items: data || [], totalCount: totalCount || 0, error: null }
 }
 
 /**
  * Get unique brands for filtering
  */
 export async function getUniqueBrands() {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   const { data, error } = await supabase
     .from('variants')
@@ -174,7 +202,7 @@ export async function getUniqueBrands() {
  * Get unique product types for filtering
  */
 export async function getUniqueProductTypes() {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   const { data, error } = await supabase
     .from('variants')
@@ -194,20 +222,21 @@ export async function getUniqueProductTypes() {
  * Get inventory stats
  */
 export async function getInventoryStats() {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   // Get total count
   const { count: totalSkus } = await supabase
     .from('variants')
     .select('*', { count: 'exact', head: true })
 
-  // Get OOS count
+  // Get CURRENTLY out of stock items (in_stock <= 0)
+  // This is what users expect "Out of Stock" to mean
   const { count: oosCount } = await supabase
     .from('variants')
     .select('*', { count: 'exact', head: true })
-    .gt('oos', 0)
+    .lte('in_stock', 0)
 
-  // Get items needing reorder
+  // Get items needing reorder (replenishment > 0)
   const { count: reorderCount } = await supabase
     .from('variants')
     .select('*', { count: 'exact', head: true })

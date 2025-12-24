@@ -1,11 +1,11 @@
-import { createClient } from '../server'
+import { createAdminClient } from '../admin'
 import type { SyncMetric } from '@/types/database'
 
 /**
  * Get latest business summary
  */
 export async function getBusinessSummary() {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   const { data, error } = await supabase
     .from('business_summary')
@@ -42,7 +42,7 @@ export async function getBusinessSummary() {
  * Get summary history for trend charts
  */
 export async function getSummaryHistory(days = 30) {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   const startDate = new Date()
   startDate.setDate(startDate.getDate() - days)
@@ -64,7 +64,7 @@ export async function getSummaryHistory(days = 30) {
  * Get latest sync status
  */
 export async function getLatestSyncStatus() {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   const { data, error } = await supabase
     .from('sync_metrics')
@@ -96,7 +96,7 @@ export async function getLatestSyncStatus() {
  * Get sync history
  */
 export async function getSyncHistory(limit = 10) {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   const { data, error } = await supabase
     .from('sync_metrics')
@@ -115,7 +115,7 @@ export async function getSyncHistory(limit = 10) {
  * Create a new sync record (for tracking)
  */
 export async function createSyncRecord(syncType: string): Promise<{ sync: SyncMetric | null; error: string | null }> {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   const { data, error } = await supabase
     .from('sync_metrics')
@@ -144,7 +144,7 @@ export async function completeSyncRecord(
   recordsUpdated: number,
   errorMessage?: string
 ) {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   const { data: currentSync } = await supabase
     .from('sync_metrics')

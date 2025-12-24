@@ -87,7 +87,13 @@ export async function POST() {
           product_type: v.product_type ? String(v.product_type) : undefined,
           image: v.image ? String(v.image) : undefined,
           price: v.price != null ? Number(v.price) : undefined,
-          cost_price: v.cost_price != null ? Number(v.cost_price) : undefined,
+          // Check multiple possible cost field names from Inventory Planner
+          cost_price: v.cost_price != null ? Number(v.cost_price)
+            : v.cost != null ? Number(v.cost)
+            : v.unit_cost != null ? Number(v.unit_cost)
+            : v.average_cost != null ? Number(v.average_cost)
+            : v.cogs != null ? Number(v.cogs)
+            : undefined,
           in_stock: Number(v.in_stock) || 0,
           purchase_orders_qty: Number(v.purchase_orders_qty) || 0,
           last_7_days_sales: Number(v.last_7_days_sales) || 0,

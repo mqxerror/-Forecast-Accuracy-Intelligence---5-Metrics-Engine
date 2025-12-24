@@ -9,6 +9,7 @@ import {
   Package,
   Settings,
   LogOut,
+  Shield,
 } from 'lucide-react'
 import { signOut } from '@/lib/supabase/auth'
 import { useRouter } from 'next/navigation'
@@ -28,6 +29,11 @@ const navItems = [
     name: 'Inventory',
     href: '/inventory',
     icon: Package,
+  },
+  {
+    name: 'Admin',
+    href: '/admin',
+    icon: Shield,
   },
 ]
 

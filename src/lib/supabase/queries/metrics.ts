@@ -1,4 +1,4 @@
-import { createClient } from '../server'
+import { createAdminClient } from '../admin'
 import type { ForecastMetric } from '@/types/database'
 
 export interface MetricsQueryOptions {
@@ -21,7 +21,7 @@ export async function getForecastMetrics(options: MetricsQueryOptions = {}) {
     search,
   } = options
 
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   let query = supabase
     .from('forecast_metrics')
@@ -52,7 +52,7 @@ export async function getForecastMetrics(options: MetricsQueryOptions = {}) {
  * Get metrics for a specific variant
  */
 export async function getVariantMetrics(variantId: string) {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   const { data, error } = await supabase
     .from('forecast_metrics')
@@ -73,7 +73,7 @@ export async function getVariantMetrics(variantId: string) {
  * Get metrics by SKU
  */
 export async function getMetricsBySku(sku: string) {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   const { data, error } = await supabase
     .from('forecast_metrics')
@@ -94,7 +94,7 @@ export async function getMetricsBySku(sku: string) {
  * Get average accuracy across all SKUs
  */
 export async function getAverageAccuracy() {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   // Get latest metric for each variant
   const { data, error } = await supabase
@@ -147,7 +147,7 @@ export async function getAverageAccuracy() {
  * Get best and worst performing SKUs by MAPE
  */
 export async function getAccuracyExtremes(limit = 5) {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   // Best performers (lowest MAPE)
   const { data: bestData, error: bestError } = await supabase
@@ -176,7 +176,7 @@ export async function getAccuracyExtremes(limit = 5) {
  * Get metrics distribution for charts
  */
 export async function getMetricsDistribution() {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
 
   const { data, error } = await supabase
     .from('forecast_metrics')
