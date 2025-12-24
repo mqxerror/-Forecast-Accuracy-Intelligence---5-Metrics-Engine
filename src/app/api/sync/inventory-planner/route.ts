@@ -115,9 +115,10 @@ export async function POST() {
         }).filter((v): v is VariantInsert => v !== null)
 
         if (transformedBatch.length > 0) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const { error } = await supabase
             .from('variants')
-            .upsert(transformedBatch as never[], { onConflict: 'id' })
+            .upsert(transformedBatch as any[], { onConflict: 'id' })
 
           if (error) {
             console.error(`Batch error:`, error.message)
