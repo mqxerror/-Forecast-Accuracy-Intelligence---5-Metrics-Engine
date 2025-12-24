@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { getLatestSyncStatus, getSyncHistory } from '@/lib/supabase/queries/summary'
 
+export const dynamic = 'force-dynamic'
+
 export async function GET() {
   try {
     const [latestResult, historyResult] = await Promise.all([

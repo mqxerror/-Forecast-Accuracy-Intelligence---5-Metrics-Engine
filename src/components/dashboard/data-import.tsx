@@ -1,8 +1,19 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
-import { RefreshCw, Upload, X, FileJson, CheckCircle, AlertCircle } from 'lucide-react'
+import { RefreshCw, Upload, X, FileJson, CheckCircle, AlertCircle, Database, Loader2 } from 'lucide-react'
+
+interface SyncStatus {
+  id: string | null
+  status: string
+  started_at: string | null
+  completed_at: string | null
+  records_fetched: number
+  records_updated: number
+  duration_ms: number
+  error_message: string | null
+}
 
 interface ImportResult {
   success: boolean
@@ -27,12 +38,41 @@ interface DataImportProps {
 
 export function DataImport({ onImportComplete }: DataImportProps) {
   const [syncing, setSyncing] = useState(false)
+  const [syncingIP, setSyncingIP] = useState(false)
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [result, setResult] = useState<ImportResult | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Poll for sync status
+  useEffect(() => {
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch('/api/sync/status')
+        const data = await res.json()
+        setSyncStatus(data.current)
+
+        // If a sync is running, we're syncing from IP
+        if (data.current?.status === 'running') {
+          setSyncingIP(true)
+        } else {
+          setSyncingIP(false)
+        }
+      } catch (error) {
+        console.error('Error fetching sync status:', error)
+      }
+    }
+
+    // Initial fetch
+    fetchStatus()
+
+    // Poll every 3 seconds if syncing
+    const interval = setInterval(fetchStatus, 3000)
+    return () => clearInterval(interval)
+  }, [])
 
   const handleSync = async () => {
     setSyncing(true)
@@ -51,6 +91,34 @@ export function DataImport({ onImportComplete }: DataImportProps) {
     } finally {
       setSyncing(false)
     }
+  }
+
+  const handleSyncInventoryPlanner = async () => {
+    setSyncingIP(true)
+    try {
+      // Fire and forget - the sync will run in background
+      fetch('/api/sync/inventory-planner', { method: 'POST' })
+        .then(async (response) => {
+          const data = await response.json()
+          if (data.success) {
+            onImportComplete?.()
+          }
+        })
+        .catch(console.error)
+    } catch (error) {
+      console.error('Sync failed:', error)
+      setSyncingIP(false)
+    }
+  }
+
+  const formatTime = (dateStr: string) => {
+    return new Date(dateStr).toLocaleTimeString()
+  }
+
+  const formatDurationMin = (ms: number) => {
+    const mins = Math.floor(ms / 60000)
+    const secs = Math.floor((ms % 60000) / 1000)
+    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
   }
 
   const handleDrag = useCallback((e: React.DragEvent) => {
@@ -318,31 +386,81 @@ export function DataImport({ onImportComplete }: DataImportProps) {
 
   return (
     <>
-      <div className="flex items-center gap-2 relative z-20">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="cursor-pointer"
-          onClick={() => {
-            console.log('Upload button clicked!', { showUploadModal })
-            setShowUploadModal(true)
-          }}
-        >
-          <Upload className="mr-2 h-4 w-4" />
-          Upload JSON
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleSync}
-          disabled={syncing}
-        >
-          <RefreshCw
-            className={`mr-2 h-4 w-4 ${syncing ? 'animate-spin' : ''}`}
-          />
-          {syncing ? 'Syncing...' : 'Sync n8n'}
-        </Button>
+      <div className="flex flex-col gap-3">
+        {/* Sync Status Banner */}
+        {syncStatus?.status === 'running' && (
+          <div className="flex items-center gap-3 px-4 py-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <Loader2 className="h-5 w-5 text-blue-600 animate-spin" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-blue-900">
+                Syncing from Inventory Planner...
+              </p>
+              <p className="text-xs text-blue-700">
+                {syncStatus.records_updated > 0
+                  ? `${syncStatus.records_updated.toLocaleString()} variants imported`
+                  : 'Starting sync...'}
+                {syncStatus.started_at && ` • Started ${formatTime(syncStatus.started_at)}`}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Last Sync Info */}
+        {syncStatus?.status === 'completed' && syncStatus.completed_at && (
+          <div className="flex items-center gap-2 text-sm text-gray-600">
+            <CheckCircle className="h-4 w-4 text-green-500" />
+            <span>
+              Last sync: {syncStatus.records_updated.toLocaleString()} variants
+              in {formatDurationMin(syncStatus.duration_ms)}
+              {' • '}{new Date(syncStatus.completed_at).toLocaleString()}
+            </span>
+          </div>
+        )}
+
+        {/* Action Buttons */}
+        <div className="flex items-center gap-2 relative z-20">
+          <Button
+            variant="default"
+            size="sm"
+            onClick={handleSyncInventoryPlanner}
+            disabled={syncingIP}
+          >
+            {syncingIP ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Syncing...
+              </>
+            ) : (
+              <>
+                <Database className="mr-2 h-4 w-4" />
+                Sync Inventory Planner
+              </>
+            )}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="cursor-pointer"
+            onClick={() => {
+              setShowUploadModal(true)
+            }}
+          >
+            <Upload className="mr-2 h-4 w-4" />
+            Upload JSON
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSync}
+            disabled={syncing}
+          >
+            <RefreshCw
+              className={`mr-2 h-4 w-4 ${syncing ? 'animate-spin' : ''}`}
+            />
+            {syncing ? 'Syncing...' : 'Sync n8n'}
+          </Button>
+        </div>
       </div>
       {modal}
     </>
