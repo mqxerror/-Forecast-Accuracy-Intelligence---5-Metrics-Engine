@@ -144,7 +144,8 @@ export async function POST(request: NextRequest) {
       if (transformedBatch.length > 0) {
         const { error } = await supabase
           .from('variants')
-          .upsert(transformedBatch as never[], { onConflict: 'id' })
+          // @ts-ignore - Supabase types are too strict
+        .upsert(transformedBatch, { onConflict: 'id' })
 
         if (error) {
           console.error(`Batch error:`, error.message)
@@ -254,7 +255,8 @@ async function calculateAllMetrics(supabase: ReturnType<typeof createAdminClient
     const batch = metricsToInsert.slice(i, i + 500)
     const { error } = await supabase
       .from('forecast_metrics')
-      .upsert(batch as never[], { onConflict: 'variant_id' })
+      // @ts-ignore - Supabase types are too strict
+      .upsert(batch, { onConflict: 'variant_id' })
 
     if (!error) {
       metricsCalculated += batch.length
@@ -292,6 +294,7 @@ async function updateBusinessSummary(supabase: ReturnType<typeof createAdminClie
     ? 100 - (validMape.reduce((a, b) => a + b, 0) / validMape.length)
     : null
 
+  // @ts-ignore - Supabase types are too strict
   await supabase
     .from('business_summary')
     .upsert({
@@ -306,5 +309,5 @@ async function updateBusinessSummary(supabase: ReturnType<typeof createAdminClie
       avg_forecast_accuracy: avgForecastAccuracy,
       total_lost_revenue: totalLostRevenue,
       top_priority_items: null
-    } as never, { onConflict: 'id' })
+    }, { onConflict: 'id' })
 }

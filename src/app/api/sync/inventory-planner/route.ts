@@ -115,10 +115,10 @@ export async function POST() {
         }).filter((v): v is VariantInsert => v !== null)
 
         if (transformedBatch.length > 0) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          // @ts-ignore - Supabase types are too strict
           const { error } = await supabase
             .from('variants')
-            .upsert(transformedBatch as any[], { onConflict: 'id' })
+            .upsert(transformedBatch, { onConflict: 'id' })
 
           if (error) {
             console.error(`Batch error:`, error.message)
@@ -209,6 +209,7 @@ async function updateBusinessSummary(supabase: ReturnType<typeof createAdminClie
     (sum, v) => sum + (v.forecasted_lost_revenue || 0), 0
   )
 
+  // @ts-ignore - Supabase types are too strict
   await supabase
     .from('business_summary')
     .upsert({
@@ -222,5 +223,5 @@ async function updateBusinessSummary(supabase: ReturnType<typeof createAdminClie
       items_out_of_stock: itemsOutOfStock,
       total_lost_revenue: totalLostRevenue,
       top_priority_items: null
-    } as never, { onConflict: 'id' })
+    }, { onConflict: 'id' })
 }
