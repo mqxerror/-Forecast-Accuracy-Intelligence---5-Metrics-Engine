@@ -162,7 +162,26 @@ function extractVariants(body: unknown): Record<string, unknown>[] {
   // Flatten Inventory Planner nested structure
   // IP sends: { connections: [{id, sku, ...}], warehouse: [...] }
   // We need to extract the main connection data and merge with warehouse
-  return rawVariants.map(variant => flattenIPVariant(variant)).filter(v => v !== null) as Record<string, unknown>[]
+  if (!Array.isArray(rawVariants)) {
+    console.error('extractVariants: rawVariants is not an array:', typeof rawVariants)
+    return []
+  }
+
+  try {
+    const flattened = rawVariants.map(variant => {
+      if (!variant || typeof variant !== 'object') {
+        console.warn('Invalid variant:', variant)
+        return null
+      }
+      return flattenIPVariant(variant)
+    }).filter(v => v !== null) as Record<string, unknown>[]
+
+    console.log(`Extracted ${flattened.length} variants from ${rawVariants.length} raw items`)
+    return flattened
+  } catch (error) {
+    console.error('Error flattening variants:', error)
+    return []
+  }
 }
 
 /**

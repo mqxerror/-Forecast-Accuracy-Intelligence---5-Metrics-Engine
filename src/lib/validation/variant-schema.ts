@@ -109,14 +109,15 @@ export function validateVariants(data: unknown[]): ValidationResult {
     const parseResult = variantSchema.safeParse(item)
 
     if (!parseResult.success) {
+      const errors = parseResult.error?.errors || []
       result.invalid.push({
         index: i,
         sku,
-        errors: parseResult.error.errors.map(e => ({
-          field: e.path.join('.'),
-          message: e.message,
-          value: item?.[e.path[0] as string]
-        }))
+        errors: Array.isArray(errors) ? errors.map(e => ({
+          field: e.path?.join('.') || 'unknown',
+          message: e.message || 'Validation failed',
+          value: item?.[e.path?.[0] as string]
+        })) : [{ field: 'unknown', message: 'Validation failed', value: null }]
       })
       result.summary.failed++
       continue
