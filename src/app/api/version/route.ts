@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 
 // Build timestamp to verify deployment
-const BUILD_VERSION = '2025-12-25T01:50:00-v2'
+const BUILD_VERSION = '2025-12-25T06:15:00-v7-debug-body-variants'
 
 export async function GET() {
   return NextResponse.json({
