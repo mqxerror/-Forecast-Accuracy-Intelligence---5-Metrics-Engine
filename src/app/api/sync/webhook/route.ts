@@ -114,8 +114,9 @@ export async function POST(request: NextRequest) {
     }
   } catch (error) {
     console.error('Webhook error:', error)
+    const stack = error instanceof Error ? error.stack : undefined
     return NextResponse.json(
-      { error: 'Webhook processing failed', details: String(error) },
+      { error: 'Webhook processing failed', details: String(error), stack },
       { status: 500 }
     )
   }
@@ -569,13 +570,15 @@ async function handleVariantImport(body: { variants?: unknown[]; sync_id?: strin
 
   } catch (error) {
     console.error('Import error:', error)
+    const stack = error instanceof Error ? error.stack : undefined
+    console.error('Stack trace:', stack)
     await errorLogger.flush()
     await progressTracker.fail(String(error))
     if (syncId) {
       await completeSyncRecord(syncId, 'failed', 0, 0, String(error))
     }
     return NextResponse.json(
-      { error: 'Import failed', details: String(error) },
+      { error: 'Import failed', details: String(error), stack },
       { status: 500 }
     )
   }
