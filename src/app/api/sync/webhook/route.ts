@@ -497,8 +497,28 @@ async function handleVariantImport(body: { variants?: unknown[]; sync_id?: strin
     console.log(`Step ${step}: extracted ${rawVariants?.length ?? 'undefined'} variants`)
 
     if (!rawVariants || rawVariants.length === 0) {
+      // Return debug info about what was received
+      const bodyKeys = typeof body === 'object' && body !== null ? Object.keys(body as Record<string, unknown>) : []
+      const bodyType = typeof body
+      const isArray = Array.isArray(body)
+      const hasBodyProp = typeof body === 'object' && body !== null && 'body' in (body as Record<string, unknown>)
+      const innerBodyKeys = hasBodyProp && typeof (body as Record<string, unknown>).body === 'object'
+        ? Object.keys((body as Record<string, unknown>).body as Record<string, unknown>)
+        : []
+
       return NextResponse.json(
-        { error: 'No variants provided', step },
+        {
+          error: 'No variants provided',
+          step,
+          debug: {
+            bodyType,
+            isArray,
+            bodyKeys,
+            hasBodyProp,
+            innerBodyKeys,
+            sample: JSON.stringify(body).slice(0, 500)
+          }
+        },
         { status: 400 }
       )
     }
