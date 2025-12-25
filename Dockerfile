@@ -1,6 +1,9 @@
 # Build stage
 FROM node:20-alpine AS builder
 
+# Cache bust: 2025-12-25-v7
+ARG CACHE_BUST=v7
+
 WORKDIR /app
 
 # Copy package files
