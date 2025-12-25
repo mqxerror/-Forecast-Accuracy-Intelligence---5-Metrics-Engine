@@ -1,0 +1,369 @@
+{
+  "name": "Full Inventory Sync - Paginated",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily 2AM Sync",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "full-inventory-sync",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Manual Trigger Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 200],
+      "webhookId": "full-inventory-sync"
+    },
+    {
+      "parameters": {
+        "values": {
+          "number": [
+            {
+              "name": "page",
+              "value": 0
+            },
+            {
+              "name": "limit",
+              "value": 1000
+            },
+            {
+              "name": "totalProcessed",
+              "value": 0
+            }
+          ],
+          "boolean": [
+            {
+              "name": "hasMore",
+              "value": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "init-variables",
+      "name": "Initialize Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [250, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-hasmore",
+              "leftValue": "={{ $json.hasMore }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "loopCount": 100,
+        "options": {}
+      },
+      "id": "loop-check",
+      "name": "While Has More Pages",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [500, 100]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://app.inventory-planner.com/api/v1/variants",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "={{ $json.limit }}"
+            },
+            {
+              "name": "page",
+              "value": "={{ $json.page }}"
+            },
+            {
+              "name": "include",
+              "value": "orders_by_month,forecast_by_period"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Account",
+              "value": "a19403"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "get-variants",
+      "name": "GET Variants from IP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [750, 0],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ip-api-credentials",
+          "name": "Inventory Planner API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://inventory.pixelcraftedmedia.com/api/sync/webhook",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"variants\": $json.variants }",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "post-to-webhook",
+      "name": "POST to App Webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 0],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "app-webhook-credentials",
+          "name": "App Webhook Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "values": {
+          "number": [
+            {
+              "name": "page",
+              "value": "={{ $('Initialize Variables').item.json.page + 1 }}"
+            },
+            {
+              "name": "limit",
+              "value": "={{ $('Initialize Variables').item.json.limit }}"
+            },
+            {
+              "name": "totalProcessed",
+              "value": "={{ $('Initialize Variables').item.json.totalProcessed + $('GET Variants from IP').item.json.variants.length }}"
+            }
+          ],
+          "boolean": [
+            {
+              "name": "hasMore",
+              "value": "={{ $('GET Variants from IP').item.json.variants.length >= $('Initialize Variables').item.json.limit }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "update-variables",
+      "name": "Update Loop Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1250, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://inventory.pixelcraftedmedia.com/api/metrics/recalculate",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "recalculate-metrics",
+      "name": "Recalculate Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [750, 200]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "message",
+              "value": "Full sync completed"
+            }
+          ],
+          "number": [
+            {
+              "name": "totalVariants",
+              "value": "={{ $('Update Loop Variables').item.json.totalProcessed }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "completion-summary",
+      "name": "Sync Complete",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1000, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, message: 'Full sync completed', totalVariants: $json.totalVariants }) }}",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1250, 200]
+    }
+  ],
+  "connections": {
+    "Daily 2AM Sync": {
+      "main": [
+        [
+          {
+            "node": "Initialize Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger Webhook": {
+      "main": [
+        [
+          {
+            "node": "Initialize Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Variables": {
+      "main": [
+        [
+          {
+            "node": "While Has More Pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "While Has More Pages": {
+      "main": [
+        [
+          {
+            "node": "GET Variants from IP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Recalculate Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET Variants from IP": {
+      "main": [
+        [
+          {
+            "node": "POST to App Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST to App Webhook": {
+      "main": [
+        [
+          {
+            "node": "Update Loop Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Loop Variables": {
+      "main": [
+        [
+          {
+            "node": "While Has More Pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recalculate Metrics": {
+      "main": [
+        [
+          {
+            "node": "Sync Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync Complete": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-12-24T00:00:00.000Z",
+  "versionId": "1"
+}

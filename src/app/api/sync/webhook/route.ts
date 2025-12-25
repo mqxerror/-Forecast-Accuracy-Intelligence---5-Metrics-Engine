@@ -125,6 +125,7 @@ export async function POST(request: NextRequest) {
  * Extract variants from various payload formats:
  * - Raw array: [...variants]
  * - Wrapped: { variants: [...] }
+ * - Double wrapped from n8n: { body: { variants: [...] } }
  * - Inventory Planner API: { data: [...] } or { variants: [...] }
  * - With event: { event: "import_variants", variants: [...] }
  */
@@ -135,6 +136,17 @@ function extractVariants(body: unknown): Record<string, unknown>[] {
 
   if (typeof body === 'object' && body !== null) {
     const obj = body as Record<string, unknown>
+
+    // Check for double-wrapped body from n8n (body.body.variants)
+    if (obj.body && typeof obj.body === 'object') {
+      const innerBody = obj.body as Record<string, unknown>
+      if (Array.isArray(innerBody.variants)) {
+        return innerBody.variants as Record<string, unknown>[]
+      }
+      if (Array.isArray(innerBody.data)) {
+        return innerBody.data as Record<string, unknown>[]
+      }
+    }
 
     // Check common wrapper keys
     if (Array.isArray(obj.variants)) {
