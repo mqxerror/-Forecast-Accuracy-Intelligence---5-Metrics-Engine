@@ -399,44 +399,63 @@ async function handleChunkedImport(
 
 async function handleVariantImport(body: { variants?: unknown[]; sync_id?: string }, startTime: number) {
   const supabase = createAdminClient()
-
-  // Create sync record if not provided
-  let syncId = body.sync_id
-  if (!syncId) {
-    const { sync } = await createSyncRecord('webhook')
-    syncId = sync?.id
-  }
-
-  // Extract variants from various payload formats
-  const rawVariants = extractVariants(body)
-
-  if (rawVariants.length === 0) {
-    return NextResponse.json(
-      { error: 'No variants provided' },
-      { status: 400 }
-    )
-  }
-
-  // Initialize progress tracking
-  const progressTracker = new SyncProgressTracker(syncId || null, rawVariants.length)
-  await progressTracker.start('Processing import...')
-
-  // Initialize error logger
-  const errorLogger = new SyncErrorLogger(syncId || null)
+  let step = 'init'
+  let syncId: string | undefined = body.sync_id
+  let errorLogger: SyncErrorLogger | undefined
+  let progressTracker: SyncProgressTracker | undefined
 
   try {
+    // Create sync record if not provided
+    step = 'create_sync_record'
+    if (!syncId) {
+      const { sync } = await createSyncRecord('webhook')
+      syncId = sync?.id
+    }
+
+    // Extract variants from various payload formats
+    step = 'extract_variants'
+    const rawVariants = extractVariants(body)
+    console.log(`Step ${step}: extracted ${rawVariants?.length ?? 'undefined'} variants`)
+
+    if (!rawVariants || rawVariants.length === 0) {
+      return NextResponse.json(
+        { error: 'No variants provided', step },
+        { status: 400 }
+      )
+    }
+
+    // Initialize progress tracking
+    step = 'init_progress_tracker'
+    progressTracker = new SyncProgressTracker(syncId || null, rawVariants.length)
+    await progressTracker.start('Processing import...')
+
+    // Initialize error logger
+    step = 'init_error_logger'
+    errorLogger = new SyncErrorLogger(syncId || null)
+
+    step = 'start_processing'
     console.log(`Processing ${rawVariants.length} variants`)
 
     // STEP 1: Validate all variants
+    step = 'validate_variants'
     const validation = validateVariants(rawVariants)
+    if (!validation || !validation.summary) {
+      throw new Error(`Validation returned invalid result: ${JSON.stringify(validation)}`)
+    }
     console.log(`Validation: ${validation.summary.passed} passed, ${validation.summary.failed} failed, ${validation.summary.withWarnings} warnings`)
 
     // STEP 2: Detect field mappings
+    step = 'detect_field_mappings'
     const fieldMappings = detectFieldMappings(rawVariants)
     console.log(`Field detection: ${fieldMappings.summary}`)
 
     // Use validated variants for import
+    step = 'get_valid_variants'
     const variants = validation.valid
+    if (!variants || !Array.isArray(variants)) {
+      throw new Error(`validation.valid is not an array: ${typeof variants}`)
+    }
+    console.log(`Valid variants count: ${variants.length}`)
 
     // Transform and insert in batches
     const batchSize = 500
@@ -569,16 +588,27 @@ async function handleVariantImport(body: { variants?: unknown[]; sync_id?: strin
     })
 
   } catch (error) {
-    console.error('Import error:', error)
+    console.error(`Import error at step "${step}":`, error)
     const stack = error instanceof Error ? error.stack : undefined
     console.error('Stack trace:', stack)
-    await errorLogger.flush()
-    await progressTracker.fail(String(error))
-    if (syncId) {
-      await completeSyncRecord(syncId, 'failed', 0, 0, String(error))
+
+    // Try to flush and update records, but don't fail if these fail too
+    try {
+      if (errorLogger) {
+        await errorLogger.flush()
+      }
+      if (progressTracker) {
+        await progressTracker.fail(String(error))
+      }
+      if (syncId) {
+        await completeSyncRecord(syncId, 'failed', 0, 0, String(error))
+      }
+    } catch (cleanupError) {
+      console.error('Error during cleanup:', cleanupError)
     }
+
     return NextResponse.json(
-      { error: 'Import failed', details: String(error), stack },
+      { error: 'Import failed', details: String(error), step, stack },
       { status: 500 }
     )
   }
