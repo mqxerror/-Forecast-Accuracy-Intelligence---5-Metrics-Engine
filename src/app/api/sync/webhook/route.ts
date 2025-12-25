@@ -123,49 +123,55 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * Extract variants from various payload formats - BULLETPROOF VERSION
+ * Extract variants from various payload formats - ULTRA BULLETPROOF VERSION
  * Handles all possible data structures from n8n and Inventory Planner
  */
 function extractVariants(body: unknown): Record<string, unknown>[] {
   console.log('=== extractVariants START ===')
-  console.log('Body type:', typeof body)
-  console.log('Body is array:', Array.isArray(body))
-
-  if (!body) {
-    console.error('Body is null/undefined')
-    return []
-  }
-
-  // Step 1: Find the raw variants array from various wrapper formats
-  let rawVariants: unknown[] = []
 
   try {
+    console.log('Body type:', typeof body)
+    console.log('Body is array:', Array.isArray(body))
+
+    if (!body) {
+      console.error('Body is null/undefined')
+      return []
+    }
+
+    // Step 1: Find the raw variants array from various wrapper formats
+    let rawVariants: unknown[] = []
+
     if (Array.isArray(body)) {
       console.log('Body is direct array with length:', body.length)
       rawVariants = body
-    } else if (typeof body === 'object') {
+    } else if (typeof body === 'object' && body !== null) {
       const obj = body as Record<string, unknown>
-      const keys = Object.keys(obj)
+      const keys = Object.keys(obj || {})
       console.log('Body keys:', keys)
 
-      // Try multiple possible locations for the variants array
-      const possibleArrays = [
-        obj.variants,
-        obj.data,
-        obj.items,
-        obj.results,
-        // n8n sometimes wraps in body
-        (obj.body as Record<string, unknown>)?.variants,
-        (obj.body as Record<string, unknown>)?.data,
-        // Sometimes nested deeper
-        (obj.json as Record<string, unknown>)?.variants,
+      // Try to find variants array - check all possible locations
+      // n8n sends: { "body": { "variants": [...] } }
+      const locations = [
+        { path: 'variants', value: obj.variants },
+        { path: 'data', value: obj.data },
+        { path: 'items', value: obj.items },
+        { path: 'results', value: obj.results },
+        { path: 'body.variants', value: (obj.body as Record<string, unknown> | null)?.variants },
+        { path: 'body.data', value: (obj.body as Record<string, unknown> | null)?.data },
+        { path: 'body.items', value: (obj.body as Record<string, unknown> | null)?.items },
+        { path: 'json.variants', value: (obj.json as Record<string, unknown> | null)?.variants },
+        { path: 'json.body.variants', value: ((obj.json as Record<string, unknown> | null)?.body as Record<string, unknown> | null)?.variants },
       ]
 
-      for (const arr of possibleArrays) {
-        if (Array.isArray(arr) && arr.length > 0) {
-          console.log('Found array with length:', arr.length)
-          rawVariants = arr
-          break
+      for (const loc of locations) {
+        try {
+          if (loc.value && Array.isArray(loc.value) && loc.value.length > 0) {
+            console.log(`Found array at ${loc.path} with length:`, loc.value.length)
+            rawVariants = loc.value
+            break
+          }
+        } catch (e) {
+          console.warn(`Error checking ${loc.path}:`, e)
         }
       }
 
@@ -177,40 +183,41 @@ function extractVariants(body: unknown): Record<string, unknown>[] {
         }
       }
     }
-  } catch (e) {
-    console.error('Error finding variants array:', e)
-    return []
-  }
 
-  if (!Array.isArray(rawVariants) || rawVariants.length === 0) {
-    console.error('No variants found. Raw body sample:', JSON.stringify(body).slice(0, 500))
-    return []
-  }
-
-  console.log(`Found ${rawVariants.length} raw variants`)
-
-  // Step 2: Flatten each variant (handle IP nested structure)
-  const flattened: Record<string, unknown>[] = []
-
-  for (let i = 0; i < rawVariants.length; i++) {
-    try {
-      const variant = rawVariants[i]
-      if (!variant || typeof variant !== 'object') {
-        console.warn(`Variant ${i} is not an object:`, typeof variant)
-        continue
-      }
-
-      const flat = flattenIPVariant(variant as Record<string, unknown>)
-      if (flat) {
-        flattened.push(flat)
-      }
-    } catch (e) {
-      console.error(`Error flattening variant ${i}:`, e)
+    if (!rawVariants || !Array.isArray(rawVariants) || rawVariants.length === 0) {
+      console.error('No variants found. Raw body sample:', JSON.stringify(body).slice(0, 1000))
+      return []
     }
-  }
 
-  console.log(`Extracted ${flattened.length} flattened variants`)
-  return flattened
+    console.log(`Found ${rawVariants.length} raw variants`)
+
+    // Step 2: Flatten each variant (handle IP nested structure)
+    const flattened: Record<string, unknown>[] = []
+
+    for (let i = 0; i < rawVariants.length; i++) {
+      try {
+        const variant = rawVariants[i]
+        if (!variant || typeof variant !== 'object') {
+          console.warn(`Variant ${i} is not an object:`, typeof variant)
+          continue
+        }
+
+        const flat = flattenIPVariant(variant as Record<string, unknown>)
+        if (flat && typeof flat === 'object') {
+          flattened.push(flat)
+        }
+      } catch (e) {
+        console.error(`Error flattening variant ${i}:`, e)
+      }
+    }
+
+    console.log(`Extracted ${flattened.length} flattened variants`)
+    return flattened
+
+  } catch (e) {
+    console.error('CRITICAL: extractVariants failed:', e)
+    return []
+  }
 }
 
 /**
@@ -521,50 +528,58 @@ async function handleVariantImport(body: { variants?: unknown[]; sync_id?: strin
 
     for (let i = 0; i < variants.length; i += batchSize) {
       const batch = variants.slice(i, i + batchSize)
+      if (!batch || !Array.isArray(batch)) continue
 
-      const transformedBatch = batch.map((v): VariantInsert | null => {
-        const variantId = v.id ? String(v.id) : null
-        const sku = v.sku ? String(v.sku) : ''
+      // Use for-loop instead of .map() for safety
+      const transformedBatch: VariantInsert[] = []
+      for (const v of batch) {
+        try {
+          if (!v) continue
+          const variantId = v.id ? String(v.id) : null
+          const sku = v.sku ? String(v.sku) : ''
 
-        if (!variantId || !sku) return null
+          if (!variantId || !sku) continue
 
-        // Use detected field mappings for cost
-        const costValue = getCostValue(v as Record<string, unknown>, fieldMappings.cost.detectedField || undefined)
-        const lostRevenueValue = getLostRevenueValue(v as Record<string, unknown>, fieldMappings.lostRevenue.detectedField || undefined)
+          // Use detected field mappings for cost
+          const costValue = getCostValue(v as Record<string, unknown>, fieldMappings?.cost?.detectedField || undefined)
+          const lostRevenueValue = getLostRevenueValue(v as Record<string, unknown>, fieldMappings?.lostRevenue?.detectedField || undefined)
 
-        return {
-          id: variantId,
-          sku: sku,
-          title: v.title ? String(v.title) : undefined,
-          barcode: v.barcode ? String(v.barcode) : undefined,
-          brand: v.brand ? String(v.brand) : undefined,
-          product_type: v.product_type ? String(v.product_type) : undefined,
-          image: v.image ? String(v.image) : undefined,
-          price: v.price != null ? Number(v.price) : undefined,
-          cost_price: costValue ?? undefined,
-          in_stock: Number(v.in_stock) || 0,
-          purchase_orders_qty: Number(v.purchase_orders_qty) || 0,
-          last_7_days_sales: Number(v.last_7_days_sales) || 0,
-          last_30_days_sales: Number(v.last_30_days_sales) || 0,
-          last_90_days_sales: Number(v.last_90_days_sales) || 0,
-          last_180_days_sales: Number(v.last_180_days_sales) || 0,
-          last_365_days_sales: Number(v.last_365_days_sales) || 0,
-          total_sales: Number(v.total_sales) || 0,
-          orders_by_month: v.orders_by_month as Variant['orders_by_month'],
-          forecast_by_period: v.forecast_by_period as Variant['forecast_by_period'],
-          forecasted_stock: v.forecasted_stock != null ? Number(v.forecasted_stock) : undefined,
-          current_forecast: v.current_forecast != null ? Number(v.current_forecast) : undefined,
-          replenishment: Number(v.replenishment) || 0,
-          to_order: Number(v.to_order) || 0,
-          minimum_stock: v.minimum_stock != null ? Number(v.minimum_stock) : undefined,
-          lead_time: v.lead_time != null ? Number(v.lead_time) : undefined,
-          oos: Number(v.oos) || 0,
-          oos_last_60_days: Number(v.oos_last_60_days) || 0,
-          forecasted_lost_revenue: lostRevenueValue ?? undefined,
-          raw_data: v as Variant['raw_data'],
-          synced_at: new Date().toISOString()
+          transformedBatch.push({
+            id: variantId,
+            sku: sku,
+            title: v.title ? String(v.title) : undefined,
+            barcode: v.barcode ? String(v.barcode) : undefined,
+            brand: v.brand ? String(v.brand) : undefined,
+            product_type: v.product_type ? String(v.product_type) : undefined,
+            image: v.image ? String(v.image) : undefined,
+            price: v.price != null ? Number(v.price) : undefined,
+            cost_price: costValue ?? undefined,
+            in_stock: Number(v.in_stock) || 0,
+            purchase_orders_qty: Number(v.purchase_orders_qty) || 0,
+            last_7_days_sales: Number(v.last_7_days_sales) || 0,
+            last_30_days_sales: Number(v.last_30_days_sales) || 0,
+            last_90_days_sales: Number(v.last_90_days_sales) || 0,
+            last_180_days_sales: Number(v.last_180_days_sales) || 0,
+            last_365_days_sales: Number(v.last_365_days_sales) || 0,
+            total_sales: Number(v.total_sales) || 0,
+            orders_by_month: v.orders_by_month as Variant['orders_by_month'],
+            forecast_by_period: v.forecast_by_period as Variant['forecast_by_period'],
+            forecasted_stock: v.forecasted_stock != null ? Number(v.forecasted_stock) : undefined,
+            current_forecast: v.current_forecast != null ? Number(v.current_forecast) : undefined,
+            replenishment: Number(v.replenishment) || 0,
+            to_order: Number(v.to_order) || 0,
+            minimum_stock: v.minimum_stock != null ? Number(v.minimum_stock) : undefined,
+            lead_time: v.lead_time != null ? Number(v.lead_time) : undefined,
+            oos: Number(v.oos) || 0,
+            oos_last_60_days: Number(v.oos_last_60_days) || 0,
+            forecasted_lost_revenue: lostRevenueValue ?? undefined,
+            raw_data: v as Variant['raw_data'],
+            synced_at: new Date().toISOString()
+          })
+        } catch (transformError) {
+          console.error('Error transforming variant:', transformError)
         }
-      }).filter((v): v is VariantInsert => v !== null)
+      }
 
       if (transformedBatch.length > 0) {
         const { error } = await supabase
@@ -709,49 +724,57 @@ async function processVariantBatch(
 
   for (let i = 0; i < variants.length; i += batchSize) {
     const batch = variants.slice(i, i + batchSize)
+    if (!batch || !Array.isArray(batch)) continue
 
-    const transformedBatch = batch.map((v): VariantInsert | null => {
-      const variantId = v.id ? String(v.id) : null
-      const sku = v.sku ? String(v.sku) : ''
+    // Use for-loop instead of .map() for safety
+    const transformedBatch: VariantInsert[] = []
+    for (const v of batch) {
+      try {
+        if (!v) continue
+        const variantId = v.id ? String(v.id) : null
+        const sku = v.sku ? String(v.sku) : ''
 
-      if (!variantId || !sku) return null
+        if (!variantId || !sku) continue
 
-      const costValue = getCostValue(v as Record<string, unknown>, fieldMappings.cost.detectedField || undefined)
-      const lostRevenueValue = getLostRevenueValue(v as Record<string, unknown>, fieldMappings.lostRevenue.detectedField || undefined)
+        const costValue = getCostValue(v as Record<string, unknown>, fieldMappings?.cost?.detectedField || undefined)
+        const lostRevenueValue = getLostRevenueValue(v as Record<string, unknown>, fieldMappings?.lostRevenue?.detectedField || undefined)
 
-      return {
-        id: variantId,
-        sku: sku,
-        title: v.title ? String(v.title) : undefined,
-        barcode: v.barcode ? String(v.barcode) : undefined,
-        brand: v.brand ? String(v.brand) : undefined,
-        product_type: v.product_type ? String(v.product_type) : undefined,
-        image: v.image ? String(v.image) : undefined,
-        price: v.price != null ? Number(v.price) : undefined,
-        cost_price: costValue ?? undefined,
-        in_stock: Number(v.in_stock) || 0,
-        purchase_orders_qty: Number(v.purchase_orders_qty) || 0,
-        last_7_days_sales: Number(v.last_7_days_sales) || 0,
-        last_30_days_sales: Number(v.last_30_days_sales) || 0,
-        last_90_days_sales: Number(v.last_90_days_sales) || 0,
-        last_180_days_sales: Number(v.last_180_days_sales) || 0,
-        last_365_days_sales: Number(v.last_365_days_sales) || 0,
-        total_sales: Number(v.total_sales) || 0,
-        orders_by_month: v.orders_by_month as Variant['orders_by_month'],
-        forecast_by_period: v.forecast_by_period as Variant['forecast_by_period'],
-        forecasted_stock: v.forecasted_stock != null ? Number(v.forecasted_stock) : undefined,
-        current_forecast: v.current_forecast != null ? Number(v.current_forecast) : undefined,
-        replenishment: Number(v.replenishment) || 0,
-        to_order: Number(v.to_order) || 0,
-        minimum_stock: v.minimum_stock != null ? Number(v.minimum_stock) : undefined,
-        lead_time: v.lead_time != null ? Number(v.lead_time) : undefined,
-        oos: Number(v.oos) || 0,
-        oos_last_60_days: Number(v.oos_last_60_days) || 0,
-        forecasted_lost_revenue: lostRevenueValue ?? undefined,
-        raw_data: v as Variant['raw_data'],
-        synced_at: new Date().toISOString()
+        transformedBatch.push({
+          id: variantId,
+          sku: sku,
+          title: v.title ? String(v.title) : undefined,
+          barcode: v.barcode ? String(v.barcode) : undefined,
+          brand: v.brand ? String(v.brand) : undefined,
+          product_type: v.product_type ? String(v.product_type) : undefined,
+          image: v.image ? String(v.image) : undefined,
+          price: v.price != null ? Number(v.price) : undefined,
+          cost_price: costValue ?? undefined,
+          in_stock: Number(v.in_stock) || 0,
+          purchase_orders_qty: Number(v.purchase_orders_qty) || 0,
+          last_7_days_sales: Number(v.last_7_days_sales) || 0,
+          last_30_days_sales: Number(v.last_30_days_sales) || 0,
+          last_90_days_sales: Number(v.last_90_days_sales) || 0,
+          last_180_days_sales: Number(v.last_180_days_sales) || 0,
+          last_365_days_sales: Number(v.last_365_days_sales) || 0,
+          total_sales: Number(v.total_sales) || 0,
+          orders_by_month: v.orders_by_month as Variant['orders_by_month'],
+          forecast_by_period: v.forecast_by_period as Variant['forecast_by_period'],
+          forecasted_stock: v.forecasted_stock != null ? Number(v.forecasted_stock) : undefined,
+          current_forecast: v.current_forecast != null ? Number(v.current_forecast) : undefined,
+          replenishment: Number(v.replenishment) || 0,
+          to_order: Number(v.to_order) || 0,
+          minimum_stock: v.minimum_stock != null ? Number(v.minimum_stock) : undefined,
+          lead_time: v.lead_time != null ? Number(v.lead_time) : undefined,
+          oos: Number(v.oos) || 0,
+          oos_last_60_days: Number(v.oos_last_60_days) || 0,
+          forecasted_lost_revenue: lostRevenueValue ?? undefined,
+          raw_data: v as Variant['raw_data'],
+          synced_at: new Date().toISOString()
+        })
+      } catch (transformError) {
+        console.error('Error transforming variant in chunk:', transformError)
       }
-    }).filter((v): v is VariantInsert => v !== null)
+    }
 
     if (transformedBatch.length > 0) {
       const { error } = await supabase
