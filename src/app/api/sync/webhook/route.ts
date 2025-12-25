@@ -123,90 +123,138 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * Extract variants from various payload formats:
- * - Raw array: [...variants]
- * - Wrapped: { variants: [...] }
- * - Double wrapped from n8n: { body: { variants: [...] } }
- * - Inventory Planner API: { data: [...] } or { variants: [...] }
- * - With event: { event: "import_variants", variants: [...] }
+ * Extract variants from various payload formats - BULLETPROOF VERSION
+ * Handles all possible data structures from n8n and Inventory Planner
  */
 function extractVariants(body: unknown): Record<string, unknown>[] {
-  let rawVariants: Record<string, unknown>[] = []
+  console.log('=== extractVariants START ===')
+  console.log('Body type:', typeof body)
+  console.log('Body is array:', Array.isArray(body))
 
-  if (Array.isArray(body)) {
-    rawVariants = body as Record<string, unknown>[]
-  } else if (typeof body === 'object' && body !== null) {
-    const obj = body as Record<string, unknown>
-
-    // Check for double-wrapped body from n8n (body.body.variants)
-    if (obj.body && typeof obj.body === 'object') {
-      const innerBody = obj.body as Record<string, unknown>
-      if (Array.isArray(innerBody.variants)) {
-        rawVariants = innerBody.variants as Record<string, unknown>[]
-      } else if (Array.isArray(innerBody.data)) {
-        rawVariants = innerBody.data as Record<string, unknown>[]
-      }
-    }
-
-    // Check common wrapper keys
-    if (rawVariants.length === 0) {
-      if (Array.isArray(obj.variants)) {
-        rawVariants = obj.variants as Record<string, unknown>[]
-      } else if (Array.isArray(obj.data)) {
-        rawVariants = obj.data as Record<string, unknown>[]
-      } else if (Array.isArray(obj.items)) {
-        rawVariants = obj.items as Record<string, unknown>[]
-      }
-    }
-  }
-
-  // Flatten Inventory Planner nested structure
-  // IP sends: { connections: [{id, sku, ...}], warehouse: [...] }
-  // We need to extract the main connection data and merge with warehouse
-  if (!Array.isArray(rawVariants)) {
-    console.error('extractVariants: rawVariants is not an array:', typeof rawVariants)
+  if (!body) {
+    console.error('Body is null/undefined')
     return []
   }
+
+  // Step 1: Find the raw variants array from various wrapper formats
+  let rawVariants: unknown[] = []
 
   try {
-    const flattened = rawVariants.map(variant => {
-      if (!variant || typeof variant !== 'object') {
-        console.warn('Invalid variant:', variant)
-        return null
-      }
-      return flattenIPVariant(variant)
-    }).filter(v => v !== null) as Record<string, unknown>[]
+    if (Array.isArray(body)) {
+      console.log('Body is direct array with length:', body.length)
+      rawVariants = body
+    } else if (typeof body === 'object') {
+      const obj = body as Record<string, unknown>
+      const keys = Object.keys(obj)
+      console.log('Body keys:', keys)
 
-    console.log(`Extracted ${flattened.length} variants from ${rawVariants.length} raw items`)
-    return flattened
-  } catch (error) {
-    console.error('Error flattening variants:', error)
+      // Try multiple possible locations for the variants array
+      const possibleArrays = [
+        obj.variants,
+        obj.data,
+        obj.items,
+        obj.results,
+        // n8n sometimes wraps in body
+        (obj.body as Record<string, unknown>)?.variants,
+        (obj.body as Record<string, unknown>)?.data,
+        // Sometimes nested deeper
+        (obj.json as Record<string, unknown>)?.variants,
+      ]
+
+      for (const arr of possibleArrays) {
+        if (Array.isArray(arr) && arr.length > 0) {
+          console.log('Found array with length:', arr.length)
+          rawVariants = arr
+          break
+        }
+      }
+
+      // If still empty, check if body itself is a single variant or has connections
+      if (rawVariants.length === 0) {
+        if (obj.connections || obj.id || obj.sku) {
+          console.log('Body appears to be a single variant, wrapping in array')
+          rawVariants = [obj]
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Error finding variants array:', e)
     return []
   }
+
+  if (!Array.isArray(rawVariants) || rawVariants.length === 0) {
+    console.error('No variants found. Raw body sample:', JSON.stringify(body).slice(0, 500))
+    return []
+  }
+
+  console.log(`Found ${rawVariants.length} raw variants`)
+
+  // Step 2: Flatten each variant (handle IP nested structure)
+  const flattened: Record<string, unknown>[] = []
+
+  for (let i = 0; i < rawVariants.length; i++) {
+    try {
+      const variant = rawVariants[i]
+      if (!variant || typeof variant !== 'object') {
+        console.warn(`Variant ${i} is not an object:`, typeof variant)
+        continue
+      }
+
+      const flat = flattenIPVariant(variant as Record<string, unknown>)
+      if (flat) {
+        flattened.push(flat)
+      }
+    } catch (e) {
+      console.error(`Error flattening variant ${i}:`, e)
+    }
+  }
+
+  console.log(`Extracted ${flattened.length} flattened variants`)
+  return flattened
 }
 
 /**
- * Flatten Inventory Planner's nested variant structure.
- * IP sends variants with connections[] and warehouse[] arrays.
- * We extract the main connection and merge with warehouse data.
+ * Flatten Inventory Planner's nested variant structure - ROBUST VERSION
+ * Handles multiple data formats from IP API
  */
 function flattenIPVariant(variant: Record<string, unknown>): Record<string, unknown> | null {
-  // If already flat (has id at root), return as-is
+  if (!variant || typeof variant !== 'object') {
+    return null
+  }
+
+  // If already flat (has id and sku at root), return as-is
   if (variant.id && variant.sku) {
+    console.log(`Variant already flat: ${variant.sku}`)
     return variant
   }
 
-  // Check for Inventory Planner nested structure
-  const connections = variant.connections as Record<string, unknown>[] | undefined
-  const warehouses = variant.warehouse as Record<string, unknown>[] | undefined
+  // Check for Inventory Planner nested structure with connections[]
+  const connections = variant.connections
+  const warehouses = variant.warehouse || variant.warehouses
 
-  if (!connections || !Array.isArray(connections) || connections.length === 0) {
-    // Not IP format, return as-is
+  // Handle case where connections is not an array or is empty
+  if (!connections) {
+    // Maybe the variant data is at root level but missing id - try to extract
+    if (variant.sku) {
+      console.log(`Variant has sku but no id: ${variant.sku}`)
+      return { ...variant, id: variant.sku }
+    }
+    console.warn('No connections and no sku found in variant:', Object.keys(variant))
+    return variant // Return as-is, let validation handle it
+  }
+
+  // Ensure connections is an array
+  const connectionsArray = Array.isArray(connections)
+    ? connections as Record<string, unknown>[]
+    : [connections as Record<string, unknown>]
+
+  if (connectionsArray.length === 0) {
+    console.warn('Empty connections array')
     return variant
   }
 
   // Find the main connection (connection_main: true) or use first
-  const mainConnection = connections.find(c => c.connection_main === true) || connections[0]
+  const mainConnection = connectionsArray.find(c => c?.connection_main === true) || connectionsArray[0]
 
   if (!mainConnection) {
     return null
@@ -214,11 +262,20 @@ function flattenIPVariant(variant: Record<string, unknown>): Record<string, unkn
 
   // Find matching warehouse data (use 'combined' or first available)
   let warehouseData: Record<string, unknown> = {}
-  if (warehouses && Array.isArray(warehouses) && warehouses.length > 0) {
-    const combined = warehouses.find(w =>
-      String(w.warehouse).includes('combined') || String(w.warehouse) === 'combined'
-    )
-    warehouseData = combined || warehouses[0] || {}
+  if (warehouses) {
+    // Handle both array and object formats
+    const warehousesArray = Array.isArray(warehouses)
+      ? warehouses as Record<string, unknown>[]
+      : typeof warehouses === 'object'
+        ? [warehouses as Record<string, unknown>]
+        : []
+
+    if (warehousesArray.length > 0) {
+      const combined = warehousesArray.find(w =>
+        w && (String(w.warehouse || '').includes('combined') || String(w.warehouse) === 'combined')
+      )
+      warehouseData = combined || warehousesArray[0] || {}
+    }
   }
 
   // Merge connection data with warehouse data
