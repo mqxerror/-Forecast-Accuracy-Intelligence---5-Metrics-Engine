@@ -151,27 +151,42 @@ function extractVariants(body: unknown): Record<string, unknown>[] {
 
       // Try to find variants array - check all possible locations
       // n8n sends: { "body": { "variants": [...] } }
-      const locations = [
-        { path: 'variants', value: obj.variants },
-        { path: 'data', value: obj.data },
-        { path: 'items', value: obj.items },
-        { path: 'results', value: obj.results },
-        { path: 'body.variants', value: (obj.body as Record<string, unknown> | null)?.variants },
-        { path: 'body.data', value: (obj.body as Record<string, unknown> | null)?.data },
-        { path: 'body.items', value: (obj.body as Record<string, unknown> | null)?.items },
-        { path: 'json.variants', value: (obj.json as Record<string, unknown> | null)?.variants },
-        { path: 'json.body.variants', value: ((obj.json as Record<string, unknown> | null)?.body as Record<string, unknown> | null)?.variants },
-      ]
 
-      for (const loc of locations) {
-        try {
-          if (loc.value && Array.isArray(loc.value) && loc.value.length > 0) {
-            console.log(`Found array at ${loc.path} with length:`, loc.value.length)
-            rawVariants = loc.value
-            break
+      // Direct checks with logging
+      console.log('Checking obj.variants:', Array.isArray(obj.variants), obj.variants ? 'has value' : 'empty')
+      console.log('Checking obj.body:', typeof obj.body, obj.body ? 'has value' : 'empty')
+
+      if (obj.body && typeof obj.body === 'object') {
+        const bodyObj = obj.body as Record<string, unknown>
+        console.log('obj.body keys:', Object.keys(bodyObj))
+        console.log('Checking obj.body.variants:', Array.isArray(bodyObj.variants), bodyObj.variants ? 'has value' : 'empty')
+
+        if (Array.isArray(bodyObj.variants) && bodyObj.variants.length > 0) {
+          console.log('Found variants in obj.body.variants with length:', bodyObj.variants.length)
+          rawVariants = bodyObj.variants
+        }
+      }
+
+      // If not found in body.variants, check other locations
+      if (rawVariants.length === 0) {
+        const locations = [
+          { path: 'variants', value: obj.variants },
+          { path: 'data', value: obj.data },
+          { path: 'items', value: obj.items },
+          { path: 'results', value: obj.results },
+          { path: 'json.variants', value: (obj.json as Record<string, unknown> | null)?.variants },
+        ]
+
+        for (const loc of locations) {
+          try {
+            if (loc.value && Array.isArray(loc.value) && loc.value.length > 0) {
+              console.log(`Found array at ${loc.path} with length:`, loc.value.length)
+              rawVariants = loc.value
+              break
+            }
+          } catch (e) {
+            console.warn(`Error checking ${loc.path}:`, e)
           }
-        } catch (e) {
-          console.warn(`Error checking ${loc.path}:`, e)
         }
       }
 
