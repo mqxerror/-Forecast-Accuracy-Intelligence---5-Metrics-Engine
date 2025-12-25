@@ -130,37 +130,144 @@ export async function POST(request: NextRequest) {
  * - With event: { event: "import_variants", variants: [...] }
  */
 function extractVariants(body: unknown): Record<string, unknown>[] {
-  if (Array.isArray(body)) {
-    return body as Record<string, unknown>[]
-  }
+  let rawVariants: Record<string, unknown>[] = []
 
-  if (typeof body === 'object' && body !== null) {
+  if (Array.isArray(body)) {
+    rawVariants = body as Record<string, unknown>[]
+  } else if (typeof body === 'object' && body !== null) {
     const obj = body as Record<string, unknown>
 
     // Check for double-wrapped body from n8n (body.body.variants)
     if (obj.body && typeof obj.body === 'object') {
       const innerBody = obj.body as Record<string, unknown>
       if (Array.isArray(innerBody.variants)) {
-        return innerBody.variants as Record<string, unknown>[]
-      }
-      if (Array.isArray(innerBody.data)) {
-        return innerBody.data as Record<string, unknown>[]
+        rawVariants = innerBody.variants as Record<string, unknown>[]
+      } else if (Array.isArray(innerBody.data)) {
+        rawVariants = innerBody.data as Record<string, unknown>[]
       }
     }
 
     // Check common wrapper keys
-    if (Array.isArray(obj.variants)) {
-      return obj.variants as Record<string, unknown>[]
-    }
-    if (Array.isArray(obj.data)) {
-      return obj.data as Record<string, unknown>[]
-    }
-    if (Array.isArray(obj.items)) {
-      return obj.items as Record<string, unknown>[]
+    if (rawVariants.length === 0) {
+      if (Array.isArray(obj.variants)) {
+        rawVariants = obj.variants as Record<string, unknown>[]
+      } else if (Array.isArray(obj.data)) {
+        rawVariants = obj.data as Record<string, unknown>[]
+      } else if (Array.isArray(obj.items)) {
+        rawVariants = obj.items as Record<string, unknown>[]
+      }
     }
   }
 
-  return []
+  // Flatten Inventory Planner nested structure
+  // IP sends: { connections: [{id, sku, ...}], warehouse: [...] }
+  // We need to extract the main connection data and merge with warehouse
+  return rawVariants.map(variant => flattenIPVariant(variant)).filter(v => v !== null) as Record<string, unknown>[]
+}
+
+/**
+ * Flatten Inventory Planner's nested variant structure.
+ * IP sends variants with connections[] and warehouse[] arrays.
+ * We extract the main connection and merge with warehouse data.
+ */
+function flattenIPVariant(variant: Record<string, unknown>): Record<string, unknown> | null {
+  // If already flat (has id at root), return as-is
+  if (variant.id && variant.sku) {
+    return variant
+  }
+
+  // Check for Inventory Planner nested structure
+  const connections = variant.connections as Record<string, unknown>[] | undefined
+  const warehouses = variant.warehouse as Record<string, unknown>[] | undefined
+
+  if (!connections || !Array.isArray(connections) || connections.length === 0) {
+    // Not IP format, return as-is
+    return variant
+  }
+
+  // Find the main connection (connection_main: true) or use first
+  const mainConnection = connections.find(c => c.connection_main === true) || connections[0]
+
+  if (!mainConnection) {
+    return null
+  }
+
+  // Find matching warehouse data (use 'combined' or first available)
+  let warehouseData: Record<string, unknown> = {}
+  if (warehouses && Array.isArray(warehouses) && warehouses.length > 0) {
+    const combined = warehouses.find(w =>
+      String(w.warehouse).includes('combined') || String(w.warehouse) === 'combined'
+    )
+    warehouseData = combined || warehouses[0] || {}
+  }
+
+  // Merge connection data with warehouse data
+  // Connection fields take priority, warehouse adds inventory-specific fields
+  return {
+    // Core identifiers from connection
+    id: mainConnection.id,
+    sku: mainConnection.sku,
+    title: mainConnection.title || mainConnection.product_title,
+    barcode: mainConnection.barcode,
+    brand: mainConnection.brand,
+    product_type: mainConnection.product_type,
+    image: mainConnection.image,
+    price: mainConnection.price,
+
+    // Cost from vendors array or warehouse
+    cost_price: extractCostPrice(mainConnection, warehouseData),
+
+    // Inventory from warehouse
+    in_stock: warehouseData.in_stock ?? 0,
+    replenishment: warehouseData.replenishment ?? 0,
+    to_order: warehouseData.to_order ?? 0,
+    lead_time: warehouseData.lead_time,
+    oos: warehouseData.oos ?? 0,
+
+    // Sales data from warehouse
+    last_7_days_sales: warehouseData.last_7_days ?? warehouseData.sales_last_7_days ?? 0,
+    last_30_days_sales: warehouseData.last_30_days ?? warehouseData.sales_last_30_days ?? 0,
+    last_90_days_sales: warehouseData.last_90_days ?? warehouseData.sales_last_90_days ?? 0,
+    last_180_days_sales: warehouseData.last_180_days ?? warehouseData.sales_last_180_days ?? 0,
+    last_365_days_sales: warehouseData.last_365_days ?? warehouseData.sales_last_365_days ?? 0,
+
+    // Forecast data
+    orders_by_month: warehouseData.orders_by_month ?? variant.orders_by_month,
+    forecast_by_period: warehouseData.forecast_by_period ?? variant.forecast_by_period,
+    current_forecast: warehouseData.current_forecast ?? warehouseData.forecast,
+
+    // Lost revenue
+    forecasted_lost_revenue: warehouseData.forecasted_lost_revenue ?? warehouseData.lost_revenue,
+
+    // Keep raw data for debugging
+    raw_data: variant
+  }
+}
+
+/**
+ * Extract cost price from various locations in IP data
+ */
+function extractCostPrice(connection: Record<string, unknown>, warehouse: Record<string, unknown>): number | undefined {
+  // Try warehouse cost_price first
+  if (warehouse.cost_price != null && Number(warehouse.cost_price) > 0) {
+    return Number(warehouse.cost_price)
+  }
+
+  // Try connection's vendors array
+  const vendors = connection.vendors as Record<string, unknown>[] | undefined
+  if (vendors && Array.isArray(vendors) && vendors.length > 0) {
+    const vendorCost = vendors[0].cost_price
+    if (vendorCost != null && Number(vendorCost) > 0) {
+      return Number(vendorCost)
+    }
+  }
+
+  // Try direct cost_price on connection
+  if (connection.cost_price != null && Number(connection.cost_price) > 0) {
+    return Number(connection.cost_price)
+  }
+
+  return undefined
 }
 
 /**
