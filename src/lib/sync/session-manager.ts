@@ -284,8 +284,8 @@ export class SyncSessionManager {
 
     const chunks = await this.getSessionChunks(sessionId)
     const completedIndexes = new Set(
-      chunks
-        .filter(c => c.status === 'completed')
+      (chunks || [])
+        .filter(c => c && c.status === 'completed')
         .map(c => c.chunk_index)
     )
 

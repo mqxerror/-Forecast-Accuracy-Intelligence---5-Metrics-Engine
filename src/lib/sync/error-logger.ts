@@ -136,7 +136,7 @@ export class SyncErrorLogger {
       error_message: `${error.message}${error.details ? ` - ${error.details}` : ''}`,
       field_name: null,
       raw_value: null,
-      raw_record: records.length <= 3 ? { batch_size: records.length, skus: records.map(r => r.sku) } : null
+      raw_record: records && records.length <= 3 ? { batch_size: records.length, skus: records.filter(r => r).map(r => r?.sku ?? 'unknown') } : null
     }
 
     this.buffer.push(errorEntry)

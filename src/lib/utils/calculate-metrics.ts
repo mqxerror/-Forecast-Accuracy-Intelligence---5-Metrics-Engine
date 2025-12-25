@@ -100,12 +100,18 @@ export function selectPrimaryMetric(actuals: number[]): 'mape' | 'wape' {
  * Formula: (1/n) * Σ|actual - forecast| / actual * 100
  */
 export function calculateMAPE(actual: number[], forecast: number[]): number | null {
+  if (!actual || !forecast || !Array.isArray(actual) || !Array.isArray(forecast)) return null
   if (actual.length !== forecast.length || actual.length === 0) return null
 
-  // Filter out periods where actual is 0 (undefined MAPE)
-  const validPairs = actual
-    .map((a, i) => ({ actual: a, forecast: forecast[i] }))
-    .filter((pair) => pair.actual !== 0)
+  // Filter out periods where actual is 0 (undefined MAPE) - use for-loop for safety
+  const validPairs: { actual: number; forecast: number }[] = []
+  for (let i = 0; i < actual.length; i++) {
+    const a = actual[i]
+    const f = forecast[i]
+    if (a !== 0 && a != null && f != null) {
+      validPairs.push({ actual: a, forecast: f })
+    }
+  }
 
   if (validPairs.length === 0) return null
 
