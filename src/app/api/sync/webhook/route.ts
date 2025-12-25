@@ -630,17 +630,17 @@ async function handleVariantImport(body: { variants?: unknown[]; sync_id?: strin
       },
       fieldDetection: {
         cost: {
-          detected: fieldMappings.cost.detectedField,
-          coverage: Math.round(fieldMappings.cost.coverage * 100),
-          alternatives: fieldMappings.cost.alternatives.map(a =>
-            `${a.field} (${Math.round(a.coverage * 100)}%)`
-          ).slice(0, 3)
+          detected: fieldMappings?.cost?.detectedField ?? null,
+          coverage: Math.round((fieldMappings?.cost?.coverage ?? 0) * 100),
+          alternatives: (fieldMappings?.cost?.alternatives ?? []).slice(0, 3).map(a =>
+            `${a?.field ?? 'unknown'} (${Math.round((a?.coverage ?? 0) * 100)}%)`
+          )
         },
         lostRevenue: {
-          detected: fieldMappings.lostRevenue.detectedField,
-          coverage: Math.round(fieldMappings.lostRevenue.coverage * 100)
+          detected: fieldMappings?.lostRevenue?.detectedField ?? null,
+          coverage: Math.round((fieldMappings?.lostRevenue?.coverage ?? 0) * 100)
         },
-        needsConfirmation: fieldMappings.needsConfirmation
+        needsConfirmation: fieldMappings?.needsConfirmation ?? false
       }
     })
 

@@ -110,14 +110,23 @@ export function validateVariants(data: unknown[]): ValidationResult {
 
     if (!parseResult.success) {
       const errors = parseResult.error?.errors || []
+      // Use for-loop instead of .map() for safety
+      const mappedErrors: { field: string; message: string; value: unknown }[] = []
+      if (Array.isArray(errors)) {
+        for (const e of errors) {
+          mappedErrors.push({
+            field: e?.path?.join('.') || 'unknown',
+            message: e?.message || 'Validation failed',
+            value: item?.[e?.path?.[0] as string] ?? null
+          })
+        }
+      } else {
+        mappedErrors.push({ field: 'unknown', message: 'Validation failed', value: null })
+      }
       result.invalid.push({
         index: i,
         sku,
-        errors: Array.isArray(errors) ? errors.map(e => ({
-          field: e.path?.join('.') || 'unknown',
-          message: e.message || 'Validation failed',
-          value: item?.[e.path?.[0] as string]
-        })) : [{ field: 'unknown', message: 'Validation failed', value: null }]
+        errors: mappedErrors
       })
       result.summary.failed++
       continue

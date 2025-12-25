@@ -57,13 +57,14 @@ export function detectLostRevenueField(variants: Record<string, unknown>[]): Fie
 }
 
 /**
- * Generic field detection from a list of candidates
+ * Generic field detection from a list of candidates - BULLETPROOF VERSION
  */
 function detectFieldFromCandidates(
   variants: Record<string, unknown>[],
   candidates: string[]
 ): FieldDetectionResult {
-  if (variants.length === 0) {
+  // Defensive checks
+  if (!variants || !Array.isArray(variants) || variants.length === 0) {
     return {
       detectedField: null,
       coverage: 0,
@@ -71,19 +72,37 @@ function detectFieldFromCandidates(
     }
   }
 
-  const results = candidates.map(field => {
-    const withValue = variants.filter(v => {
-      const value = v[field]
-      return value != null && !isNaN(Number(value)) && Number(value) !== 0
-    })
-
+  if (!candidates || !Array.isArray(candidates)) {
     return {
-      field,
-      count: withValue.length,
-      coverage: withValue.length / variants.length,
-      sample: withValue[0]?.[field]
+      detectedField: null,
+      coverage: 0,
+      alternatives: []
     }
-  })
+  }
+
+  // Use for-loop instead of .map() for safety
+  const results: { field: string; count: number; coverage: number; sample: unknown }[] = []
+
+  for (const field of candidates) {
+    let count = 0
+    let sample: unknown = undefined
+
+    for (const v of variants) {
+      if (!v || typeof v !== 'object') continue
+      const value = v[field]
+      if (value != null && !isNaN(Number(value)) && Number(value) !== 0) {
+        count++
+        if (sample === undefined) sample = value
+      }
+    }
+
+    results.push({
+      field,
+      count,
+      coverage: count / variants.length,
+      sample
+    })
+  }
 
   // Sort by coverage (highest first)
   const sorted = results.sort((a, b) => b.count - a.count)
@@ -183,7 +202,7 @@ export function getLostRevenueValue(
 
 /**
  * Discover all unique field names in a variant dataset
- * Useful for debugging and field mapping UI
+ * Useful for debugging and field mapping UI - BULLETPROOF VERSION
  */
 export function discoverAllFields(variants: Record<string, unknown>[]): {
   field: string
@@ -191,11 +210,13 @@ export function discoverAllFields(variants: Record<string, unknown>[]): {
   nonNullCount: number
   sampleValue: unknown
 }[] {
-  if (variants.length === 0) return []
+  if (!variants || !Array.isArray(variants) || variants.length === 0) return []
 
   const fieldStats: Record<string, { type: Set<string>; nonNullCount: number; sample: unknown }> = {}
 
   for (const variant of variants) {
+    if (!variant || typeof variant !== 'object') continue
+
     for (const [field, value] of Object.entries(variant)) {
       if (!fieldStats[field]) {
         fieldStats[field] = { type: new Set(), nonNullCount: 0, sample: undefined }
@@ -211,12 +232,16 @@ export function discoverAllFields(variants: Record<string, unknown>[]): {
     }
   }
 
-  return Object.entries(fieldStats)
-    .map(([field, stats]) => ({
+  // Use for-loop instead of .map() for safety
+  const result: { field: string; type: string; nonNullCount: number; sampleValue: unknown }[] = []
+  for (const [field, stats] of Object.entries(fieldStats)) {
+    result.push({
       field,
       type: Array.from(stats.type).join('|'),
       nonNullCount: stats.nonNullCount,
       sampleValue: stats.sample
-    }))
-    .sort((a, b) => b.nonNullCount - a.nonNullCount)
+    })
+  }
+
+  return result.sort((a, b) => b.nonNullCount - a.nonNullCount)
 }
